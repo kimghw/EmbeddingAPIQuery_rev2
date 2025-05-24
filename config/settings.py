@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     
     # FastAPI Settings
     API_HOST: str = Field(default="0.0.0.0", env="API_HOST")
-    API_PORT: int = Field(default=8000, env="API_PORT")
+    API_PORT: int = Field(default=5000, env="API_PORT")
     API_RELOAD: bool = Field(default=True, env="API_RELOAD")
     
     # JWT Settings

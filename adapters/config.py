@@ -42,7 +42,7 @@ class Settings(BaseSettings):
         env="MICROSOFT_SCOPES"
     )
     redirect_uri: str = Field(
-        "http://localhost:8000/auth/callback",
+        "http://localhost:5000/auth/callback",
         env="MICROSOFT_REDIRECT_URI"
     )
     graph_api_endpoint: str = Field(
@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     
     # FastAPI Configuration
     api_host: str = Field("0.0.0.0", env="API_HOST")
-    api_port: int = Field(8000, env="API_PORT")
+    api_port: int = Field(5000, env="API_PORT")
     api_reload: bool = Field(True, env="API_RELOAD")
     
     # JWT Configuration
