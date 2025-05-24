@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import StaticPool
 
 from core.ports.config import ConfigPort
+from core.utils.security import SecurityUtils
 from .models import Base
 
 
@@ -107,18 +108,7 @@ class DatabaseAdapter:
     
     def _mask_url(self, url: str) -> str:
         """Mask sensitive information in database URL for logging."""
-        if "@" in url:
-            parts = url.split("@")
-            if len(parts) == 2:
-                protocol_and_auth = parts[0]
-                host_and_db = parts[1]
-                
-                if "://" in protocol_and_auth:
-                    protocol, auth = protocol_and_auth.split("://", 1)
-                    if ":" in auth:
-                        user, _ = auth.split(":", 1)
-                        return f"{protocol}://{user}:***@{host_and_db}"
-        return url
+        return SecurityUtils.mask_url(url)
     
     def _setup_session_factories(self) -> None:
         """Setup session factories for sync and async operations."""

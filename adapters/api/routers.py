@@ -575,8 +575,14 @@ def create_config_router() -> APIRouter:
     ):
         """Get current configuration (with sensitive data masked)."""
         try:
+            # Safely get environment with fallback
+            try:
+                environment = config.get_environment()
+            except Exception:
+                environment = "development"  # fallback
+            
             return ConfigurationResponse(
-                environment=config.get_environment(),
+                environment=environment,
                 database_url_masked=config.get_database_url().split('@')[-1] if '@' in config.get_database_url() else config.get_database_url(),
                 graph_api_endpoint=config.get_graph_api_endpoint(),
                 external_api_url=config.get_external_api_url(),

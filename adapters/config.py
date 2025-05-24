@@ -13,6 +13,7 @@ from core.ports.config import (
     MissingConfigurationError,
     InvalidConfigurationError
 )
+from core.utils.security import SecurityUtils
 
 
 class Settings(BaseSettings):
@@ -210,13 +211,16 @@ class ConfigAdapter(ConfigPort):
     
     def _setup_logging(self) -> None:
         """Setup logging configuration."""
-        # Ensure log format is valid
-        log_format = self._settings.log_format
-        if log_format == "json" or not log_format:
+        # Safely get log format with fallback
+        log_format = getattr(self._settings, 'log_format', None)
+        if not log_format or log_format == "json":
             log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         
+        # Safely get log level with fallback
+        log_level = getattr(self._settings, 'log_level', 'INFO')
+        
         logging.basicConfig(
-            level=getattr(logging, self._settings.log_level),
+            level=getattr(logging, log_level),
             format=log_format
         )
         
@@ -225,10 +229,15 @@ class ConfigAdapter(ConfigPort):
     
     def _log_configuration_status(self) -> None:
         """Log configuration status."""
-        self._logger.info(f"Configuration loaded for environment: {self._settings.environment}")
-        self._logger.info(f"Database URL configured: {bool(self._settings.database_url)}")
-        self._logger.info(f"Microsoft Graph API configured: {bool(self._settings.client_id)}")
-        self._logger.info(f"External API configured: {bool(self._settings.external_api_url)}")
+        environment = getattr(self._settings, 'environment', 'unknown')
+        database_url = getattr(self._settings, 'database_url', '')
+        client_id = getattr(self._settings, 'client_id', '')
+        external_api_url = getattr(self._settings, 'external_api_url', '')
+        
+        self._logger.info(f"Configuration loaded for environment: {environment}")
+        self._logger.info(f"Database URL configured: {bool(database_url)}")
+        self._logger.info(f"Microsoft Graph API configured: {bool(client_id)}")
+        self._logger.info(f"External API configured: {bool(external_api_url)}")
     
     # ConfigPort implementation
     def get(self, key: str, default: Any = None) -> Any:
@@ -303,110 +312,114 @@ class ConfigAdapter(ConfigPort):
     # Database Configuration
     def get_database_url(self) -> str:
         """Get database connection URL."""
-        return self._settings.database_url
+        return getattr(self._settings, 'database_url', 'sqlite:///./graphapi.db')
     
     def get_database_echo(self) -> bool:
         """Get database echo setting."""
-        return self._settings.database_echo
+        return getattr(self._settings, 'database_echo', False)
     
     # Microsoft Graph API Configuration
     def get_client_id(self) -> str:
         """Get Microsoft Graph client ID."""
-        return self._settings.client_id
+        return getattr(self._settings, 'client_id', '')
     
     def get_client_secret(self) -> str:
         """Get Microsoft Graph client secret."""
-        return self._settings.client_secret
+        return getattr(self._settings, 'client_secret', '')
     
     def get_tenant_id(self) -> str:
         """Get Microsoft Graph tenant ID."""
-        return self._settings.tenant_id
+        return getattr(self._settings, 'tenant_id', '')
     
     def get_authority(self) -> str:
         """Get Microsoft Graph authority URL."""
-        return self._settings.authority
+        return getattr(self._settings, 'authority', 'https://login.microsoftonline.com/common')
     
     def get_scopes(self) -> List[str]:
         """Get Microsoft Graph API scopes."""
-        return self._settings.scopes
+        return getattr(self._settings, 'scopes', [
+            "https://graph.microsoft.com/Mail.Read",
+            "https://graph.microsoft.com/Mail.ReadWrite",
+            "https://graph.microsoft.com/User.Read"
+        ])
     
     def get_redirect_uri(self) -> str:
         """Get OAuth redirect URI."""
-        return self._settings.redirect_uri
+        return getattr(self._settings, 'redirect_uri', 'http://localhost:5000/auth/callback')
     
     def get_graph_api_endpoint(self) -> str:
         """Get Graph API endpoint URL."""
-        return self._settings.graph_api_endpoint
+        return getattr(self._settings, 'graph_api_endpoint', 'https://graph.microsoft.com/v1.0')
     
     def get_token_cache_file(self) -> str:
         """Get token cache file path."""
-        return self._settings.token_cache_file
+        return getattr(self._settings, 'token_cache_file', '.token_cache.json')
     
     # External API Configuration
     def get_external_api_url(self) -> str:
         """Get external API URL."""
-        return self._settings.external_api_url
+        return getattr(self._settings, 'external_api_url', 'https://api.example.com/webhook')
     
     def get_external_api_key(self) -> str:
         """Get external API key."""
-        return self._settings.external_api_key
+        return getattr(self._settings, 'external_api_key', '')
     
     # FastAPI Configuration
     def get_api_host(self) -> str:
         """Get API host."""
-        return self._settings.api_host
+        return getattr(self._settings, 'api_host', '0.0.0.0')
     
     def get_api_port(self) -> int:
         """Get API port."""
-        return self._settings.api_port
+        return getattr(self._settings, 'api_port', 5000)
     
     def get_api_reload(self) -> bool:
         """Get API reload setting."""
-        return self._settings.api_reload
+        return getattr(self._settings, 'api_reload', True)
     
     # JWT Configuration
     def get_secret_key(self) -> str:
         """Get JWT secret key."""
-        return self._settings.secret_key
+        return getattr(self._settings, 'secret_key', 'your-secret-key-change-this-in-production')
     
     def get_algorithm(self) -> str:
         """Get JWT algorithm."""
-        return self._settings.algorithm
+        return getattr(self._settings, 'algorithm', 'HS256')
     
     def get_access_token_expire_minutes(self) -> int:
         """Get access token expiration minutes."""
-        return self._settings.access_token_expire_minutes
+        return getattr(self._settings, 'access_token_expire_minutes', 30)
     
     # Logging Configuration
     def get_log_level(self) -> str:
         """Get logging level."""
-        return self._settings.log_level
+        return getattr(self._settings, 'log_level', 'INFO')
     
     def get_log_format(self) -> str:
         """Get logging format."""
-        return self._settings.log_format
+        return getattr(self._settings, 'log_format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     
     # Email Detection Configuration
     def get_email_check_interval(self) -> int:
         """Get email check interval in seconds."""
-        return self._settings.email_check_interval
+        return getattr(self._settings, 'email_check_interval', 300)
     
     def get_max_retry_count(self) -> int:
         """Get maximum retry count."""
-        return self._settings.max_retry_count
+        return getattr(self._settings, 'max_retry_count', 3)
     
     def get_retry_delay(self) -> int:
         """Get retry delay in seconds."""
-        return self._settings.retry_delay
+        return getattr(self._settings, 'retry_delay', 60)
     
     # Optional Configuration
     def get_sentry_dsn(self) -> Optional[str]:
         """Get Sentry DSN for error monitoring."""
-        return self._settings.sentry_dsn
+        return getattr(self._settings, 'sentry_dsn', None)
     
     def get_user_id(self) -> str:
         """Get default user ID."""
-        return self._settings.user_id
+        return getattr(self._settings, 'user_id', 'default-user')
     
     # Validation and Management
     def validate_required_settings(self) -> bool:
@@ -450,7 +463,7 @@ class ConfigAdapter(ConfigPort):
         """Get all configuration settings (sensitive values masked)."""
         settings_dict = self._settings.model_dump()
         
-        # Mask sensitive values
+        # Mask sensitive values using SecurityUtils
         sensitive_keys = [
             "client_secret",
             "external_api_key", 
@@ -459,11 +472,7 @@ class ConfigAdapter(ConfigPort):
             "database_url"
         ]
         
-        for key in sensitive_keys:
-            if key in settings_dict and settings_dict[key]:
-                settings_dict[key] = "***MASKED***"
-        
-        return settings_dict
+        return SecurityUtils.mask_sensitive_dict(settings_dict, sensitive_keys)
     
     def reload_settings(self) -> None:
         """Reload configuration from source."""
