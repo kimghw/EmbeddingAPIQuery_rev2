@@ -7,14 +7,47 @@ import json
 
 from sqlalchemy import (
     Column, String, DateTime, Boolean, Integer, Text, 
-    ForeignKey, JSON, Index, UniqueConstraint
+    ForeignKey, JSON, Index, UniqueConstraint, TypeDecorator
 )
-from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func
 
 # Create base class
 Base = declarative_base()
+
+
+class GUID(TypeDecorator):
+    """Platform-independent GUID type.
+    
+    Uses PostgreSQL's UUID type, otherwise uses CHAR(36), storing as stringified hex values.
+    """
+    impl = String
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == 'postgresql':
+            return dialect.type_descriptor(dialect.UUID())
+        else:
+            return dialect.type_descriptor(String(36))
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return value
+        elif dialect.name == 'postgresql':
+            return str(value)
+        else:
+            if not isinstance(value, UUID):
+                return str(UUID(value))
+            else:
+                return str(value)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return value
+        else:
+            if not isinstance(value, UUID):
+                return UUID(value)
+            return value
 
 
 class UserModel(Base):
@@ -23,7 +56,7 @@ class UserModel(Base):
     __tablename__ = "users"
     
     # Primary key
-    id = Column(PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4)
+    id = Column(GUID(), primary_key=True, default=uuid4)
     
     # Basic fields
     username = Column(String(255), unique=True, nullable=False, index=True)
@@ -60,10 +93,10 @@ class AccountModel(Base):
     __tablename__ = "accounts"
     
     # Primary key
-    id = Column(PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4)
+    id = Column(GUID(), primary_key=True, default=uuid4)
     
     # Foreign key
-    user_id = Column(PostgreSQLUUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    user_id = Column(GUID(), ForeignKey("users.id"), nullable=False)
     
     # Account identification
     email = Column(String(255), nullable=False, index=True)
@@ -116,10 +149,10 @@ class EmailModel(Base):
     __tablename__ = "emails"
     
     # Primary key
-    id = Column(PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4)
+    id = Column(GUID(), primary_key=True, default=uuid4)
     
     # Foreign key
-    account_id = Column(PostgreSQLUUID(as_uuid=True), ForeignKey("accounts.id"), nullable=False)
+    account_id = Column(GUID(), ForeignKey("accounts.id"), nullable=False)
     
     # Email identification
     message_id = Column(String(255), nullable=False, unique=True, index=True)
@@ -189,10 +222,10 @@ class TransmissionRecordModel(Base):
     __tablename__ = "transmission_records"
     
     # Primary key
-    id = Column(PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4)
+    id = Column(GUID(), primary_key=True, default=uuid4)
     
     # Foreign key
-    email_id = Column(PostgreSQLUUID(as_uuid=True), ForeignKey("emails.id"), nullable=False)
+    email_id = Column(GUID(), ForeignKey("emails.id"), nullable=False)
     
     # Transmission details
     endpoint = Column(String(500), nullable=True)
@@ -245,79 +278,95 @@ class TransmissionRecordModel(Base):
 # Utility functions for model conversion
 def user_model_to_domain(user_model: UserModel):
     """Convert UserModel to domain User entity."""
-    from core.domain.user import User
+    from core.domain.user import User, UserStatus
+    
+    # Convert is_active to status
+    status = UserStatus.ACTIVE if user_model.is_active else UserStatus.INACTIVE
     
     return User(
-        id=user_model.id,
+        id=str(user_model.id) if user_model.id else None,
         username=user_model.username,
         email=user_model.email,
         full_name=user_model.full_name,
-        is_active=user_model.is_active,
+        status=status,
         created_at=user_model.created_at,
         updated_at=user_model.updated_at,
-        last_login=user_model.last_login,
-        settings=user_model.settings or {}
+        last_login_at=user_model.last_login
     )
 
 
 def domain_user_to_model(user):
     """Convert domain User entity to UserModel."""
+    from core.domain.user import UserStatus
+    
+    # Convert status to is_active
+    is_active = user.status == UserStatus.ACTIVE if hasattr(user, 'status') else user.is_active()
+    
     return UserModel(
-        id=user.id,
+        id=UUID(user.id) if user.id else uuid4(),
         username=user.username,
         email=user.email,
         full_name=user.full_name,
-        is_active=user.is_active,
-        created_at=user.created_at,
-        updated_at=user.updated_at,
-        last_login=user.last_login,
-        settings=user.settings
+        is_active=is_active,
+        created_at=user.created_at or datetime.utcnow(),
+        updated_at=user.updated_at or datetime.utcnow(),
+        last_login=user.last_login_at,
+        settings=getattr(user, 'settings', {}) or {}
     )
 
 
 def account_model_to_domain(account_model: AccountModel):
     """Convert AccountModel to domain Account entity."""
-    from core.domain.account import Account
+    from core.domain.account import Account, AccountStatus
+    
+    # Convert is_active to status
+    if account_model.is_active:
+        status = AccountStatus.ACTIVE
+    else:
+        status = AccountStatus.INACTIVE
     
     return Account(
-        id=account_model.id,
-        user_id=account_model.user_id,
-        email=account_model.email,
+        id=str(account_model.id) if account_model.id else None,
+        user_id=str(account_model.user_id),
+        email_address=account_model.email,  # DB uses 'email', domain uses 'email_address'
         display_name=account_model.display_name,
         tenant_id=account_model.tenant_id,
         access_token=account_model.access_token,
         refresh_token=account_model.refresh_token,
         token_expires_at=account_model.token_expires_at,
-        is_active=account_model.is_active,
-        is_authorized=account_model.is_authorized,
+        status=status,
         last_sync_at=account_model.last_sync_at,
         delta_link=account_model.delta_link,
         sync_enabled=account_model.sync_enabled,
         created_at=account_model.created_at,
-        updated_at=account_model.updated_at,
-        settings=account_model.settings or {}
+        updated_at=account_model.updated_at
     )
 
 
 def domain_account_to_model(account):
     """Convert domain Account entity to AccountModel."""
+    from core.domain.account import AccountStatus
+    
+    # Convert status to is_active
+    is_active = account.status == AccountStatus.ACTIVE if hasattr(account, 'status') else account.is_active()
+    
     return AccountModel(
-        id=account.id,
-        user_id=account.user_id,
-        email=account.email,
+        id=UUID(account.id) if account.id else uuid4(),
+        user_id=UUID(account.user_id) if isinstance(account.user_id, str) else account.user_id,
+        email=account.email_address,  # Domain uses 'email_address', DB uses 'email'
         display_name=account.display_name,
         tenant_id=account.tenant_id,
         access_token=account.access_token,
         refresh_token=account.refresh_token,
         token_expires_at=account.token_expires_at,
-        is_active=account.is_active,
-        is_authorized=account.is_authorized,
+        is_active=is_active,
+        is_authorized=getattr(account, 'is_authorized', False),
         last_sync_at=account.last_sync_at,
         delta_link=account.delta_link,
         sync_enabled=account.sync_enabled,
-        created_at=account.created_at,
-        updated_at=account.updated_at,
-        settings=account.settings
+        created_at=account.created_at or datetime.utcnow(),
+        updated_at=account.updated_at or datetime.utcnow(),
+        settings=getattr(account, 'settings', {}) or {}
     )
 
 

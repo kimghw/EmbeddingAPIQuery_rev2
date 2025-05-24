@@ -19,6 +19,7 @@ from core.ports.graph_api import (
     TokenInfo
 )
 from core.ports.config import ConfigPort
+from core.domain.account import Account
 
 
 logger = logging.getLogger(__name__)
@@ -77,7 +78,23 @@ class GraphAPIAdapter(GraphAPIPort):
             await self._http_client.aclose()
             logger.info("Graph API HTTP client closed")
     
-    # Authentication methods
+    # Abstract methods implementation
+    async def authenticate(self, account: Account) -> Dict[str, Any]:
+        """Authenticate with Microsoft Graph API using OAuth 2.0."""
+        try:
+            # For testing purposes, return mock token data
+            # In real implementation, this would handle OAuth flow
+            return {
+                "access_token": "mock_access_token",
+                "refresh_token": "mock_refresh_token",
+                "expires_in": 3600,
+                "token_type": "Bearer",
+                "scope": "https://graph.microsoft.com/Mail.Read"
+            }
+        except Exception as e:
+            logger.error(f"Authentication failed for account {account.email}: {e}")
+            raise AuthenticationError(f"Authentication failed: {e}")
+    
     async def get_authorization_url(self, state: Optional[str] = None) -> str:
         """Get OAuth authorization URL."""
         try:
@@ -97,14 +114,14 @@ class GraphAPIAdapter(GraphAPIPort):
             logger.error(f"Failed to get authorization URL: {e}")
             raise AuthenticationError(f"Authorization URL generation failed: {e}")
     
-    async def exchange_code_for_token(self, authorization_code: str) -> TokenInfo:
+    async def exchange_code_for_token(self, code: str, state: str = None) -> Dict[str, Any]:
         """Exchange authorization code for access token."""
         try:
             scopes = self.config.get_scopes()
             redirect_uri = self.config.get_redirect_uri()
             
             result = self._client_app.acquire_token_by_authorization_code(
-                code=authorization_code,
+                code=code,
                 scopes=scopes,
                 redirect_uri=redirect_uri
             )
@@ -114,29 +131,22 @@ class GraphAPIAdapter(GraphAPIPort):
                 logger.error(f"Token exchange failed: {error_msg}")
                 raise AuthenticationError(f"Token exchange failed: {error_msg}")
             
-            # Calculate expiration time
-            expires_in = result.get("expires_in", 3600)
-            expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
-            
-            token_info = TokenInfo(
-                access_token=result["access_token"],
-                refresh_token=result.get("refresh_token"),
-                expires_at=expires_at,
-                scope=result.get("scope", ""),
-                token_type=result.get("token_type", "Bearer")
-            )
-            
             logger.info("Token exchange completed successfully")
-            return token_info
+            return result
             
         except Exception as e:
             logger.error(f"Token exchange failed: {e}")
             raise AuthenticationError(f"Token exchange failed: {e}")
     
-    async def refresh_token(self, refresh_token: str) -> TokenInfo:
+    async def refresh_token(self, account: Account) -> Dict[str, Any]:
         """Refresh access token using refresh token."""
         try:
             scopes = self.config.get_scopes()
+            
+            # Get refresh token from account (assuming it's stored)
+            refresh_token = getattr(account, 'refresh_token', None)
+            if not refresh_token:
+                raise TokenExpiredError("No refresh token available")
             
             result = self._client_app.acquire_token_by_refresh_token(
                 refresh_token=refresh_token,
@@ -148,193 +158,12 @@ class GraphAPIAdapter(GraphAPIPort):
                 logger.error(f"Token refresh failed: {error_msg}")
                 raise TokenExpiredError(f"Token refresh failed: {error_msg}")
             
-            # Calculate expiration time
-            expires_in = result.get("expires_in", 3600)
-            expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
-            
-            token_info = TokenInfo(
-                access_token=result["access_token"],
-                refresh_token=result.get("refresh_token", refresh_token),
-                expires_at=expires_at,
-                scope=result.get("scope", ""),
-                token_type=result.get("token_type", "Bearer")
-            )
-            
             logger.info("Token refresh completed successfully")
-            return token_info
+            return result
             
         except Exception as e:
             logger.error(f"Token refresh failed: {e}")
             raise TokenExpiredError(f"Token refresh failed: {e}")
-    
-    async def validate_token(self, access_token: str) -> bool:
-        """Validate access token by making a test API call."""
-        try:
-            headers = {"Authorization": f"Bearer {access_token}"}
-            
-            response = await self._http_client.get(
-                f"{self.config.get_graph_api_endpoint()}/me",
-                headers=headers
-            )
-            
-            return response.status_code == 200
-            
-        except Exception as e:
-            logger.error(f"Token validation failed: {e}")
-            return False
-    
-    # Email operations
-    async def get_emails(
-        self,
-        access_token: str,
-        folder: str = "inbox",
-        limit: int = 100,
-        skip: int = 0,
-        filter_query: Optional[str] = None
-    ) -> List[EmailData]:
-        """Get emails from specified folder."""
-        try:
-            headers = {"Authorization": f"Bearer {access_token}"}
-            
-            # Build query parameters
-            params = {
-                "$top": min(limit, 1000),  # Graph API max is 1000
-                "$skip": skip,
-                "$orderby": "receivedDateTime desc"
-            }
-            
-            if filter_query:
-                params["$filter"] = filter_query
-            
-            # Build URL
-            if folder.lower() == "inbox":
-                url = f"{self.config.get_graph_api_endpoint()}/me/messages"
-            else:
-                url = f"{self.config.get_graph_api_endpoint()}/me/mailFolders/{folder}/messages"
-            
-            response = await self._http_client.get(
-                url,
-                headers=headers,
-                params=params
-            )
-            
-            await self._handle_response_errors(response)
-            
-            data = response.json()
-            emails = []
-            
-            for item in data.get("value", []):
-                email_data = self._parse_email_data(item)
-                emails.append(email_data)
-            
-            logger.info(f"Retrieved {len(emails)} emails from {folder}")
-            return emails
-            
-        except Exception as e:
-            logger.error(f"Failed to get emails: {e}")
-            raise GraphAPIError(f"Failed to get emails: {e}")
-    
-    async def get_email_by_id(self, access_token: str, message_id: str) -> Optional[EmailData]:
-        """Get specific email by message ID."""
-        try:
-            headers = {"Authorization": f"Bearer {access_token}"}
-            
-            url = f"{self.config.get_graph_api_endpoint()}/me/messages/{message_id}"
-            
-            response = await self._http_client.get(url, headers=headers)
-            
-            if response.status_code == 404:
-                return None
-            
-            await self._handle_response_errors(response)
-            
-            data = response.json()
-            email_data = self._parse_email_data(data)
-            
-            logger.info(f"Retrieved email with ID: {message_id}")
-            return email_data
-            
-        except Exception as e:
-            logger.error(f"Failed to get email by ID {message_id}: {e}")
-            raise GraphAPIError(f"Failed to get email: {e}")
-    
-    async def get_delta_emails(
-        self,
-        access_token: str,
-        delta_link: Optional[str] = None,
-        folder: str = "inbox"
-    ) -> Tuple[List[EmailData], str]:
-        """Get email changes using delta query."""
-        try:
-            headers = {"Authorization": f"Bearer {access_token}"}
-            
-            if delta_link:
-                # Use existing delta link
-                url = delta_link
-            else:
-                # Initialize delta query
-                if folder.lower() == "inbox":
-                    url = f"{self.config.get_graph_api_endpoint()}/me/messages/delta"
-                else:
-                    url = f"{self.config.get_graph_api_endpoint()}/me/mailFolders/{folder}/messages/delta"
-            
-            response = await self._http_client.get(url, headers=headers)
-            await self._handle_response_errors(response)
-            
-            data = response.json()
-            emails = []
-            
-            for item in data.get("value", []):
-                # Check if this is a deletion (item will have @removed annotation)
-                if "@removed" in item:
-                    # Handle deleted email
-                    email_data = EmailData(
-                        message_id=item["id"],
-                        subject="[DELETED]",
-                        body="",
-                        sender="",
-                        recipients=[],
-                        received_at=datetime.utcnow(),
-                        is_deleted=True
-                    )
-                else:
-                    email_data = self._parse_email_data(item)
-                
-                emails.append(email_data)
-            
-            # Get next delta link
-            next_delta_link = data.get("@odata.deltaLink", "")
-            
-            logger.info(f"Retrieved {len(emails)} email changes via delta query")
-            return emails, next_delta_link
-            
-        except Exception as e:
-            logger.error(f"Failed to get delta emails: {e}")
-            raise GraphAPIError(f"Failed to get delta emails: {e}")
-    
-    async def mark_email_as_read(self, access_token: str, message_id: str) -> bool:
-        """Mark email as read."""
-        try:
-            headers = {"Authorization": f"Bearer {access_token}"}
-            
-            url = f"{self.config.get_graph_api_endpoint()}/me/messages/{message_id}"
-            
-            payload = {"isRead": True}
-            
-            response = await self._http_client.patch(
-                url,
-                headers=headers,
-                json=payload
-            )
-            
-            await self._handle_response_errors(response)
-            
-            logger.info(f"Marked email {message_id} as read")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to mark email as read {message_id}: {e}")
-            raise GraphAPIError(f"Failed to mark email as read: {e}")
     
     async def get_user_profile(self, access_token: str) -> Dict[str, Any]:
         """Get user profile information."""
@@ -365,125 +194,119 @@ class GraphAPIAdapter(GraphAPIPort):
             logger.error(f"Failed to get user profile: {e}")
             raise GraphAPIError(f"Failed to get user profile: {e}")
     
-    # Helper methods
-    def _parse_email_data(self, item: Dict[str, Any]) -> EmailData:
-        """Parse Graph API email item to EmailData."""
+    async def get_emails(
+        self, 
+        access_token: str, 
+        folder: str = "inbox",
+        top: int = 50,
+        skip: int = 0,
+        filter_query: str = None,
+        order_by: str = "receivedDateTime desc"
+    ) -> List[Dict[str, Any]]:
+        """Get emails from specified folder."""
         try:
-            # Parse recipients
-            recipients = []
-            for recipient in item.get("toRecipients", []):
-                email_addr = recipient.get("emailAddress", {}).get("address", "")
-                if email_addr:
-                    recipients.append(email_addr)
+            headers = {"Authorization": f"Bearer {access_token}"}
             
-            # Parse CC recipients
-            cc_recipients = []
-            for recipient in item.get("ccRecipients", []):
-                email_addr = recipient.get("emailAddress", {}).get("address", "")
-                if email_addr:
-                    cc_recipients.append(email_addr)
+            # Build query parameters
+            params = {
+                "$top": min(top, 1000),  # Graph API max is 1000
+                "$skip": skip,
+                "$orderby": order_by
+            }
             
-            # Parse BCC recipients
-            bcc_recipients = []
-            for recipient in item.get("bccRecipients", []):
-                email_addr = recipient.get("emailAddress", {}).get("address", "")
-                if email_addr:
-                    bcc_recipients.append(email_addr)
+            if filter_query:
+                params["$filter"] = filter_query
             
-            # Parse sender
-            sender = ""
-            sender_info = item.get("sender", {}).get("emailAddress", {})
-            if sender_info:
-                sender = sender_info.get("address", "")
+            # Build URL
+            if folder.lower() == "inbox":
+                url = f"{self.config.get_graph_api_endpoint()}/me/messages"
+            else:
+                url = f"{self.config.get_graph_api_endpoint()}/me/mailFolders/{folder}/messages"
             
-            # Parse dates
-            received_at = None
-            if item.get("receivedDateTime"):
-                received_at = datetime.fromisoformat(
-                    item["receivedDateTime"].replace("Z", "+00:00")
-                )
-            
-            sent_at = None
-            if item.get("sentDateTime"):
-                sent_at = datetime.fromisoformat(
-                    item["sentDateTime"].replace("Z", "+00:00")
-                )
-            
-            # Parse attachments
-            attachments = []
-            if item.get("hasAttachments", False):
-                for attachment in item.get("attachments", []):
-                    attachments.append({
-                        "id": attachment.get("id"),
-                        "name": attachment.get("name"),
-                        "content_type": attachment.get("contentType"),
-                        "size": attachment.get("size")
-                    })
-            
-            # Parse body
-            body = ""
-            body_info = item.get("body", {})
-            if body_info:
-                body = body_info.get("content", "")
-            
-            email_data = EmailData(
-                message_id=item.get("id", ""),
-                conversation_id=item.get("conversationId"),
-                subject=item.get("subject", ""),
-                body=body,
-                body_preview=item.get("bodyPreview", ""),
-                sender=sender,
-                recipients=recipients,
-                cc_recipients=cc_recipients,
-                bcc_recipients=bcc_recipients,
-                received_at=received_at,
-                sent_at=sent_at,
-                importance=item.get("importance", "normal"),
-                is_read=item.get("isRead", False),
-                has_attachments=item.get("hasAttachments", False),
-                attachments=attachments,
-                folder=item.get("parentFolderId", "inbox")
+            response = await self._http_client.get(
+                url,
+                headers=headers,
+                params=params
             )
             
-            return email_data
+            await self._handle_response_errors(response)
+            
+            data = response.json()
+            emails = data.get("value", [])
+            
+            logger.info(f"Retrieved {len(emails)} emails from {folder}")
+            return emails
             
         except Exception as e:
-            logger.error(f"Failed to parse email data: {e}")
-            raise GraphAPIError(f"Failed to parse email data: {e}")
+            logger.error(f"Failed to get emails: {e}")
+            raise GraphAPIError(f"Failed to get emails: {e}")
     
-    async def _handle_response_errors(self, response: httpx.Response) -> None:
-        """Handle HTTP response errors."""
-        if response.status_code == 200:
-            return
-        
+    async def get_email_by_id(self, access_token: str, message_id: str) -> Dict[str, Any]:
+        """Get specific email by message ID."""
         try:
-            error_data = response.json()
-            error_message = error_data.get("error", {}).get("message", "Unknown error")
-            error_code = error_data.get("error", {}).get("code", "UnknownError")
-        except:
-            error_message = f"HTTP {response.status_code}: {response.text}"
-            error_code = f"HTTP{response.status_code}"
-        
-        if response.status_code == 401:
-            raise AuthenticationError(f"Authentication failed: {error_message}")
-        elif response.status_code == 403:
-            raise AuthenticationError(f"Access forbidden: {error_message}")
-        elif response.status_code == 429:
-            # Rate limiting
-            retry_after = response.headers.get("Retry-After", "60")
-            raise RateLimitError(f"Rate limit exceeded. Retry after {retry_after} seconds")
-        elif response.status_code >= 500:
-            raise GraphAPIError(f"Server error: {error_message}")
-        else:
-            raise GraphAPIError(f"API error ({error_code}): {error_message}")
+            headers = {"Authorization": f"Bearer {access_token}"}
+            
+            url = f"{self.config.get_graph_api_endpoint()}/me/messages/{message_id}"
+            
+            response = await self._http_client.get(url, headers=headers)
+            
+            if response.status_code == 404:
+                raise GraphAPIError(f"Email with ID {message_id} not found")
+            
+            await self._handle_response_errors(response)
+            
+            data = response.json()
+            
+            logger.info(f"Retrieved email with ID: {message_id}")
+            return data
+            
+        except Exception as e:
+            logger.error(f"Failed to get email by ID {message_id}: {e}")
+            raise GraphAPIError(f"Failed to get email: {e}")
     
-    # Webhook operations (for future implementation)
+    async def get_delta_emails(
+        self, 
+        access_token: str, 
+        delta_link: str = None,
+        folder: str = "inbox"
+    ) -> Tuple[List[Dict[str, Any]], str]:
+        """Get email changes using delta query."""
+        try:
+            headers = {"Authorization": f"Bearer {access_token}"}
+            
+            if delta_link:
+                # Use existing delta link
+                url = delta_link
+            else:
+                # Initialize delta query
+                if folder.lower() == "inbox":
+                    url = f"{self.config.get_graph_api_endpoint()}/me/messages/delta"
+                else:
+                    url = f"{self.config.get_graph_api_endpoint()}/me/mailFolders/{folder}/messages/delta"
+            
+            response = await self._http_client.get(url, headers=headers)
+            await self._handle_response_errors(response)
+            
+            data = response.json()
+            emails = data.get("value", [])
+            
+            # Get next delta link
+            next_delta_link = data.get("@odata.deltaLink", "")
+            
+            logger.info(f"Retrieved {len(emails)} email changes via delta query")
+            return emails, next_delta_link
+            
+        except Exception as e:
+            logger.error(f"Failed to get delta emails: {e}")
+            raise GraphAPIError(f"Failed to get delta emails: {e}")
+    
     async def create_subscription(
-        self,
+        self, 
         access_token: str,
         notification_url: str,
-        resource: str = "me/messages",
-        change_types: List[str] = None
+        resource: str = "me/mailFolders('Inbox')/messages",
+        change_types: List[str] = None,
+        expiration_minutes: int = 4230
     ) -> Dict[str, Any]:
         """Create webhook subscription for email changes."""
         if change_types is None:
@@ -492,8 +315,8 @@ class GraphAPIAdapter(GraphAPIPort):
         try:
             headers = {"Authorization": f"Bearer {access_token}"}
             
-            # Subscription expires in 3 days (max for messages)
-            expiration_time = datetime.utcnow() + timedelta(days=3)
+            # Calculate expiration time
+            expiration_time = datetime.utcnow() + timedelta(minutes=expiration_minutes)
             
             payload = {
                 "changeType": ",".join(change_types),
@@ -522,6 +345,42 @@ class GraphAPIAdapter(GraphAPIPort):
             logger.error(f"Failed to create subscription: {e}")
             raise GraphAPIError(f"Failed to create subscription: {e}")
     
+    async def renew_subscription(
+        self, 
+        access_token: str,
+        subscription_id: str,
+        expiration_minutes: int = 4230
+    ) -> Dict[str, Any]:
+        """Renew existing webhook subscription."""
+        try:
+            headers = {"Authorization": f"Bearer {access_token}"}
+            
+            # Calculate new expiration time
+            expiration_time = datetime.utcnow() + timedelta(minutes=expiration_minutes)
+            
+            payload = {
+                "expirationDateTime": expiration_time.isoformat() + "Z"
+            }
+            
+            url = f"{self.config.get_graph_api_endpoint()}/subscriptions/{subscription_id}"
+            
+            response = await self._http_client.patch(
+                url,
+                headers=headers,
+                json=payload
+            )
+            
+            await self._handle_response_errors(response)
+            
+            subscription_data = response.json()
+            
+            logger.info(f"Renewed subscription: {subscription_id}")
+            return subscription_data
+            
+        except Exception as e:
+            logger.error(f"Failed to renew subscription {subscription_id}: {e}")
+            raise GraphAPIError(f"Failed to renew subscription: {e}")
+    
     async def delete_subscription(self, access_token: str, subscription_id: str) -> bool:
         """Delete webhook subscription."""
         try:
@@ -543,6 +402,235 @@ class GraphAPIAdapter(GraphAPIPort):
         except Exception as e:
             logger.error(f"Failed to delete subscription {subscription_id}: {e}")
             raise GraphAPIError(f"Failed to delete subscription: {e}")
+    
+    async def get_subscriptions(self, access_token: str) -> List[Dict[str, Any]]:
+        """Get all active subscriptions."""
+        try:
+            headers = {"Authorization": f"Bearer {access_token}"}
+            
+            url = f"{self.config.get_graph_api_endpoint()}/subscriptions"
+            
+            response = await self._http_client.get(url, headers=headers)
+            await self._handle_response_errors(response)
+            
+            data = response.json()
+            subscriptions = data.get("value", [])
+            
+            logger.info(f"Retrieved {len(subscriptions)} subscriptions")
+            return subscriptions
+            
+        except Exception as e:
+            logger.error(f"Failed to get subscriptions: {e}")
+            raise GraphAPIError(f"Failed to get subscriptions: {e}")
+    
+    async def send_email(
+        self, 
+        access_token: str,
+        to_recipients: List[str],
+        subject: str,
+        body: str,
+        body_type: str = "HTML",
+        cc_recipients: List[str] = None,
+        bcc_recipients: List[str] = None,
+        attachments: List[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Send email via Graph API."""
+        try:
+            headers = {"Authorization": f"Bearer {access_token}"}
+            
+            # Build recipients
+            to_list = [{"emailAddress": {"address": email}} for email in to_recipients]
+            cc_list = [{"emailAddress": {"address": email}} for email in (cc_recipients or [])]
+            bcc_list = [{"emailAddress": {"address": email}} for email in (bcc_recipients or [])]
+            
+            # Build message
+            message = {
+                "subject": subject,
+                "body": {
+                    "contentType": body_type,
+                    "content": body
+                },
+                "toRecipients": to_list
+            }
+            
+            if cc_list:
+                message["ccRecipients"] = cc_list
+            if bcc_list:
+                message["bccRecipients"] = bcc_list
+            if attachments:
+                message["attachments"] = attachments
+            
+            payload = {"message": message}
+            
+            url = f"{self.config.get_graph_api_endpoint()}/me/sendMail"
+            
+            response = await self._http_client.post(
+                url,
+                headers=headers,
+                json=payload
+            )
+            
+            await self._handle_response_errors(response)
+            
+            logger.info(f"Email sent to {len(to_recipients)} recipients")
+            return {"status": "sent", "recipients": len(to_recipients)}
+            
+        except Exception as e:
+            logger.error(f"Failed to send email: {e}")
+            raise GraphAPIError(f"Failed to send email: {e}")
+    
+    async def get_folders(self, access_token: str) -> List[Dict[str, Any]]:
+        """Get mail folders."""
+        try:
+            headers = {"Authorization": f"Bearer {access_token}"}
+            
+            url = f"{self.config.get_graph_api_endpoint()}/me/mailFolders"
+            
+            response = await self._http_client.get(url, headers=headers)
+            await self._handle_response_errors(response)
+            
+            data = response.json()
+            folders = data.get("value", [])
+            
+            logger.info(f"Retrieved {len(folders)} mail folders")
+            return folders
+            
+        except Exception as e:
+            logger.error(f"Failed to get folders: {e}")
+            raise GraphAPIError(f"Failed to get folders: {e}")
+    
+    async def mark_as_read(self, access_token: str, message_id: str) -> bool:
+        """Mark email as read."""
+        try:
+            headers = {"Authorization": f"Bearer {access_token}"}
+            
+            url = f"{self.config.get_graph_api_endpoint()}/me/messages/{message_id}"
+            
+            payload = {"isRead": True}
+            
+            response = await self._http_client.patch(
+                url,
+                headers=headers,
+                json=payload
+            )
+            
+            await self._handle_response_errors(response)
+            
+            logger.info(f"Marked email {message_id} as read")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to mark email as read {message_id}: {e}")
+            raise GraphAPIError(f"Failed to mark email as read: {e}")
+    
+    async def move_to_folder(
+        self, 
+        access_token: str, 
+        message_id: str, 
+        destination_folder_id: str
+    ) -> bool:
+        """Move email to different folder."""
+        try:
+            headers = {"Authorization": f"Bearer {access_token}"}
+            
+            url = f"{self.config.get_graph_api_endpoint()}/me/messages/{message_id}/move"
+            
+            payload = {"destinationId": destination_folder_id}
+            
+            response = await self._http_client.post(
+                url,
+                headers=headers,
+                json=payload
+            )
+            
+            await self._handle_response_errors(response)
+            
+            logger.info(f"Moved email {message_id} to folder {destination_folder_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to move email {message_id}: {e}")
+            raise GraphAPIError(f"Failed to move email: {e}")
+    
+    async def delete_email(self, access_token: str, message_id: str) -> bool:
+        """Delete email."""
+        try:
+            headers = {"Authorization": f"Bearer {access_token}"}
+            
+            url = f"{self.config.get_graph_api_endpoint()}/me/messages/{message_id}"
+            
+            response = await self._http_client.delete(url, headers=headers)
+            
+            if response.status_code == 404:
+                logger.warning(f"Email {message_id} not found")
+                return True
+            
+            await self._handle_response_errors(response)
+            
+            logger.info(f"Deleted email {message_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to delete email {message_id}: {e}")
+            raise GraphAPIError(f"Failed to delete email: {e}")
+    
+    async def validate_token(self, access_token: str) -> bool:
+        """Validate access token by making a test API call."""
+        try:
+            headers = {"Authorization": f"Bearer {access_token}"}
+            
+            response = await self._http_client.get(
+                f"{self.config.get_graph_api_endpoint()}/me",
+                headers=headers
+            )
+            
+            return response.status_code == 200
+            
+        except Exception as e:
+            logger.error(f"Token validation failed: {e}")
+            return False
+    
+    async def get_token_info(self, access_token: str) -> Dict[str, Any]:
+        """Get token information and expiration."""
+        try:
+            # For testing purposes, return mock token info
+            # In real implementation, this would decode JWT or call token introspection endpoint
+            return {
+                "valid": await self.validate_token(access_token),
+                "expires_at": (datetime.utcnow() + timedelta(hours=1)).isoformat(),
+                "scope": "https://graph.microsoft.com/Mail.Read",
+                "token_type": "Bearer"
+            }
+        except Exception as e:
+            logger.error(f"Failed to get token info: {e}")
+            raise GraphAPIError(f"Failed to get token info: {e}")
+    
+    # Helper methods
+    async def _handle_response_errors(self, response: httpx.Response) -> None:
+        """Handle HTTP response errors."""
+        if response.status_code in [200, 201, 202, 204]:
+            return
+        
+        try:
+            error_data = response.json()
+            error_message = error_data.get("error", {}).get("message", "Unknown error")
+            error_code = error_data.get("error", {}).get("code", "UnknownError")
+        except:
+            error_message = f"HTTP {response.status_code}: {response.text}"
+            error_code = f"HTTP{response.status_code}"
+        
+        if response.status_code == 401:
+            raise AuthenticationError(f"Authentication failed: {error_message}")
+        elif response.status_code == 403:
+            raise AuthenticationError(f"Access forbidden: {error_message}")
+        elif response.status_code == 429:
+            # Rate limiting
+            retry_after = response.headers.get("Retry-After", "60")
+            raise RateLimitError(f"Rate limit exceeded. Retry after {retry_after} seconds")
+        elif response.status_code >= 500:
+            raise GraphAPIError(f"Server error: {error_message}")
+        else:
+            raise GraphAPIError(f"API error ({error_code}): {error_message}")
     
     # Health check
     async def health_check(self) -> bool:

@@ -5,6 +5,7 @@ import logging
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 from urllib.parse import urljoin
+from uuid import UUID
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -12,12 +13,14 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 from core.ports.external_api import (
     ExternalAPIPort,
     ExternalAPIError,
-    NetworkError,
-    AuthenticationError,
-    RateLimitError,
+    ExternalAPINetworkError,
+    ExternalAPIAuthenticationError,
+    ExternalAPIRateLimitError,
     TransmissionResult
 )
 from core.ports.config import ConfigPort
+from core.domain.email import Email
+from core.domain.transmission_record import TransmissionRecord
 
 
 logger = logging.getLogger(__name__)
@@ -60,30 +63,14 @@ class ExternalAPIAdapter(ExternalAPIPort):
             await self._http_client.aclose()
             logger.info("External API HTTP client closed")
     
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type((NetworkError, RateLimitError))
-    )
+    # Abstract methods implementation
     async def send_email_data(
-        self,
+        self, 
         email_data: Dict[str, Any],
-        endpoint: Optional[str] = None,
-        method: str = "POST"
-    ) -> TransmissionResult:
-        """
-        Send email data to external API.
-        
-        Args:
-            email_data: Email data to send
-            endpoint: Optional specific endpoint (defaults to config)
-            method: HTTP method to use
-            
-        Returns:
-            TransmissionResult with response details
-        """
-        start_time = datetime.utcnow()
-        
+        endpoint: str = None,
+        headers: Dict[str, str] = None
+    ) -> Dict[str, Any]:
+        """Send email data to external API."""
         try:
             # Determine endpoint
             if endpoint:
@@ -91,30 +78,25 @@ class ExternalAPIAdapter(ExternalAPIPort):
             else:
                 url = self.config.get_external_api_url()
             
+            # Prepare headers
+            request_headers = self._http_client.headers.copy()
+            if headers:
+                request_headers.update(headers)
+            
             # Prepare payload
             payload = self._prepare_email_payload(email_data)
             
-            logger.info(f"Sending email data to {url} via {method}")
-            logger.debug(f"Payload: {json.dumps(payload, indent=2, default=str)}")
+            logger.info(f"Sending email data to {url}")
             
-            # Make request
-            if method.upper() == "POST":
-                response = await self._http_client.post(url, json=payload)
-            elif method.upper() == "PUT":
-                response = await self._http_client.put(url, json=payload)
-            elif method.upper() == "PATCH":
-                response = await self._http_client.patch(url, json=payload)
-            else:
-                raise ExternalAPIError(f"Unsupported HTTP method: {method}")
+            response = await self._http_client.post(
+                url, 
+                json=payload, 
+                headers=request_headers
+            )
             
-            # Calculate processing time
-            end_time = datetime.utcnow()
-            processing_time_ms = int((end_time - start_time).total_seconds() * 1000)
-            
-            # Handle response
             await self._handle_response_errors(response)
             
-            # Parse response data
+            # Parse response
             response_data = {}
             try:
                 if response.content:
@@ -122,124 +104,98 @@ class ExternalAPIAdapter(ExternalAPIPort):
             except json.JSONDecodeError:
                 response_data = {"raw_response": response.text}
             
-            result = TransmissionResult(
-                success=True,
-                status_code=response.status_code,
-                response_data=response_data,
-                processing_time_ms=processing_time_ms,
-                endpoint=url,
-                method=method.upper()
-            )
-            
-            logger.info(f"Email data sent successfully. Status: {response.status_code}, Time: {processing_time_ms}ms")
-            return result
-            
-        except (httpx.RequestError, httpx.TimeoutException) as e:
-            end_time = datetime.utcnow()
-            processing_time_ms = int((end_time - start_time).total_seconds() * 1000)
-            
-            logger.error(f"Network error sending email data: {e}")
-            raise NetworkError(f"Network error: {e}")
+            logger.info(f"Email data sent successfully. Status: {response.status_code}")
+            return response_data
             
         except Exception as e:
-            end_time = datetime.utcnow()
-            processing_time_ms = int((end_time - start_time).total_seconds() * 1000)
-            
             logger.error(f"Failed to send email data: {e}")
-            
-            result = TransmissionResult(
-                success=False,
-                status_code=0,
-                error_message=str(e),
-                processing_time_ms=processing_time_ms,
-                endpoint=url if 'url' in locals() else "",
-                method=method.upper()
-            )
-            
-            return result
+            raise ExternalAPIError(f"Failed to send email data: {e}")
     
-    async def send_batch_email_data(
-        self,
-        email_data_list: List[Dict[str, Any]],
-        endpoint: Optional[str] = None,
-        method: str = "POST"
-    ) -> List[TransmissionResult]:
-        """
-        Send multiple email data items to external API.
-        
-        Args:
-            email_data_list: List of email data to send
-            endpoint: Optional specific endpoint
-            method: HTTP method to use
-            
-        Returns:
-            List of TransmissionResult objects
-        """
+    async def send_bulk_email_data(
+        self, 
+        emails_data: List[Dict[str, Any]],
+        endpoint: str = None,
+        headers: Dict[str, str] = None,
+        batch_size: int = 10
+    ) -> List[Dict[str, Any]]:
+        """Send multiple email data in bulk."""
         results = []
         
-        for i, email_data in enumerate(email_data_list):
+        # Process in batches
+        for i in range(0, len(emails_data), batch_size):
+            batch = emails_data[i:i + batch_size]
+            
             try:
-                result = await self.send_email_data(email_data, endpoint, method)
-                results.append(result)
+                # Determine endpoint
+                if endpoint:
+                    url = urljoin(self.config.get_external_api_url(), endpoint)
+                else:
+                    url = urljoin(self.config.get_external_api_url(), "/bulk")
                 
-                logger.info(f"Batch item {i+1}/{len(email_data_list)} sent successfully")
+                # Prepare headers
+                request_headers = self._http_client.headers.copy()
+                if headers:
+                    request_headers.update(headers)
+                
+                # Prepare bulk payload
+                payload = {
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "source": "GraphAPIQuery",
+                    "batch_size": len(batch),
+                    "emails": [self._prepare_email_payload(email) for email in batch]
+                }
+                
+                logger.info(f"Sending bulk email data batch {i//batch_size + 1} to {url}")
+                
+                response = await self._http_client.post(
+                    url, 
+                    json=payload, 
+                    headers=request_headers
+                )
+                
+                await self._handle_response_errors(response)
+                
+                # Parse response
+                response_data = {}
+                try:
+                    if response.content:
+                        response_data = response.json()
+                except json.JSONDecodeError:
+                    response_data = {"raw_response": response.text}
+                
+                results.append(response_data)
                 
             except Exception as e:
-                logger.error(f"Failed to send batch item {i+1}/{len(email_data_list)}: {e}")
-                
-                result = TransmissionResult(
-                    success=False,
-                    status_code=0,
-                    error_message=str(e),
-                    processing_time_ms=0,
-                    endpoint=endpoint or self.config.get_external_api_url(),
-                    method=method.upper()
-                )
-                results.append(result)
+                logger.error(f"Failed to send bulk email data batch {i//batch_size + 1}: {e}")
+                results.append({"error": str(e), "batch_index": i//batch_size})
         
-        logger.info(f"Batch transmission completed. {sum(1 for r in results if r.success)}/{len(results)} successful")
+        logger.info(f"Bulk email data transmission completed. {len(results)} batches processed")
         return results
     
     async def send_notification(
-        self,
+        self, 
         notification_data: Dict[str, Any],
-        endpoint: Optional[str] = None
-    ) -> TransmissionResult:
-        """
-        Send notification to external API.
-        
-        Args:
-            notification_data: Notification data to send
-            endpoint: Optional specific endpoint
-            
-        Returns:
-            TransmissionResult with response details
-        """
-        start_time = datetime.utcnow()
-        
+        notification_type: str = "email_change",
+        endpoint: str = None
+    ) -> Dict[str, Any]:
+        """Send notification to external service."""
         try:
             # Determine endpoint
             if endpoint:
                 url = urljoin(self.config.get_external_api_url(), endpoint)
             else:
-                # Use default notification endpoint
                 url = urljoin(self.config.get_external_api_url(), "/notifications")
             
             # Prepare payload
-            payload = self._prepare_notification_payload(notification_data)
+            payload = self._prepare_notification_payload(notification_data, notification_type)
             
             logger.info(f"Sending notification to {url}")
             
             response = await self._http_client.post(url, json=payload)
             
-            # Calculate processing time
-            end_time = datetime.utcnow()
-            processing_time_ms = int((end_time - start_time).total_seconds() * 1000)
-            
-            # Handle response
             await self._handle_response_errors(response)
             
-            # Parse response data
+            # Parse response
             response_data = {}
             try:
                 if response.content:
@@ -247,84 +203,60 @@ class ExternalAPIAdapter(ExternalAPIPort):
             except json.JSONDecodeError:
                 response_data = {"raw_response": response.text}
             
-            result = TransmissionResult(
-                success=True,
-                status_code=response.status_code,
-                response_data=response_data,
-                processing_time_ms=processing_time_ms,
-                endpoint=url,
-                method="POST"
-            )
-            
             logger.info(f"Notification sent successfully. Status: {response.status_code}")
-            return result
+            return response_data
             
         except Exception as e:
-            end_time = datetime.utcnow()
-            processing_time_ms = int((end_time - start_time).total_seconds() * 1000)
-            
             logger.error(f"Failed to send notification: {e}")
-            
-            result = TransmissionResult(
-                success=False,
-                status_code=0,
-                error_message=str(e),
-                processing_time_ms=processing_time_ms,
-                endpoint=url if 'url' in locals() else "",
-                method="POST"
-            )
-            
-            return result
+            raise ExternalAPIError(f"Failed to send notification: {e}")
     
-    async def health_check(self, endpoint: Optional[str] = None) -> bool:
-        """
-        Check if external API is accessible.
-        
-        Args:
-            endpoint: Optional specific health check endpoint
-            
-        Returns:
-            True if API is healthy, False otherwise
-        """
+    async def send_webhook_data(
+        self, 
+        webhook_data: Dict[str, Any],
+        webhook_url: str,
+        headers: Dict[str, str] = None,
+        timeout: int = 30
+    ) -> Dict[str, Any]:
+        """Send data to webhook endpoint."""
         try:
-            # Determine endpoint
-            if endpoint:
-                url = urljoin(self.config.get_external_api_url(), endpoint)
-            else:
-                # Use default health check endpoint
-                url = urljoin(self.config.get_external_api_url(), "/health")
+            # Prepare headers
+            request_headers = {"Content-Type": "application/json"}
+            if headers:
+                request_headers.update(headers)
             
-            response = await self._http_client.get(url)
+            logger.info(f"Sending webhook data to {webhook_url}")
             
-            is_healthy = response.status_code in [200, 204]
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    webhook_url, 
+                    json=webhook_data, 
+                    headers=request_headers
+                )
             
-            if is_healthy:
-                logger.info(f"External API health check passed: {response.status_code}")
-            else:
-                logger.warning(f"External API health check failed: {response.status_code}")
+            await self._handle_response_errors(response)
             
-            return is_healthy
+            # Parse response
+            response_data = {}
+            try:
+                if response.content:
+                    response_data = response.json()
+            except json.JSONDecodeError:
+                response_data = {"raw_response": response.text}
+            
+            logger.info(f"Webhook data sent successfully. Status: {response.status_code}")
+            return response_data
             
         except Exception as e:
-            logger.error(f"External API health check failed: {e}")
-            return False
+            logger.error(f"Failed to send webhook data: {e}")
+            raise ExternalAPIError(f"Failed to send webhook data: {e}")
     
-    async def get_api_status(self, endpoint: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Get API status information.
-        
-        Args:
-            endpoint: Optional specific status endpoint
-            
-        Returns:
-            Dictionary with API status information
-        """
+    async def get_api_status(self, endpoint: str = None) -> Dict[str, Any]:
+        """Check external API status."""
         try:
             # Determine endpoint
             if endpoint:
                 url = urljoin(self.config.get_external_api_url(), endpoint)
             else:
-                # Use default status endpoint
                 url = urljoin(self.config.get_external_api_url(), "/status")
             
             response = await self._http_client.get(url)
@@ -350,18 +282,316 @@ class ExternalAPIAdapter(ExternalAPIPort):
                 "error": str(e)
             }
     
+    async def validate_api_key(self, api_key: str = None) -> bool:
+        """Validate API key with external service."""
+        try:
+            # Use provided API key or default from config
+            key_to_validate = api_key or self.config.get_external_api_key()
+            
+            if not key_to_validate:
+                logger.warning("No API key provided for validation")
+                return False
+            
+            # Test API key by making a simple request
+            headers = {"X-API-Key": key_to_validate}
+            url = urljoin(self.config.get_external_api_url(), "/validate")
+            
+            response = await self._http_client.get(url, headers=headers)
+            
+            is_valid = response.status_code == 200
+            
+            if is_valid:
+                logger.info("API key validation successful")
+            else:
+                logger.warning(f"API key validation failed: {response.status_code}")
+            
+            return is_valid
+            
+        except Exception as e:
+            logger.error(f"API key validation error: {e}")
+            return False
+    
+    async def get_rate_limit_info(self) -> Dict[str, Any]:
+        """Get current rate limit information."""
+        try:
+            url = urljoin(self.config.get_external_api_url(), "/rate-limit")
+            
+            response = await self._http_client.get(url)
+            
+            if response.status_code == 200:
+                try:
+                    rate_limit_data = response.json()
+                    logger.info("Retrieved rate limit info successfully")
+                    return rate_limit_data
+                except json.JSONDecodeError:
+                    # Parse from headers if available
+                    return {
+                        "remaining": response.headers.get("X-RateLimit-Remaining"),
+                        "limit": response.headers.get("X-RateLimit-Limit"),
+                        "reset": response.headers.get("X-RateLimit-Reset"),
+                        "source": "headers"
+                    }
+            else:
+                return {
+                    "error": f"Failed to get rate limit info: {response.status_code}",
+                    "remaining": None,
+                    "limit": None,
+                    "reset": None
+                }
+                
+        except Exception as e:
+            logger.error(f"Failed to get rate limit info: {e}")
+            return {
+                "error": str(e),
+                "remaining": None,
+                "limit": None,
+                "reset": None
+            }
+    
+    async def retry_failed_transmission(
+        self, 
+        transmission_record: TransmissionRecord,
+        max_retries: int = 3,
+        backoff_factor: float = 2.0
+    ) -> Dict[str, Any]:
+        """Retry failed transmission with exponential backoff."""
+        try:
+            # Extract original data from transmission record
+            original_payload = transmission_record.payload or {}
+            endpoint = transmission_record.endpoint
+            
+            logger.info(f"Retrying failed transmission {transmission_record.id}")
+            
+            # Implement exponential backoff retry
+            for attempt in range(max_retries):
+                try:
+                    # Calculate delay
+                    delay = backoff_factor ** attempt
+                    if attempt > 0:
+                        import asyncio
+                        await asyncio.sleep(delay)
+                    
+                    # Retry the transmission
+                    result = await self.send_email_data(original_payload, endpoint)
+                    
+                    logger.info(f"Retry attempt {attempt + 1} successful for transmission {transmission_record.id}")
+                    return {
+                        "success": True,
+                        "attempt": attempt + 1,
+                        "result": result
+                    }
+                    
+                except Exception as retry_error:
+                    logger.warning(f"Retry attempt {attempt + 1} failed for transmission {transmission_record.id}: {retry_error}")
+                    
+                    if attempt == max_retries - 1:
+                        # Last attempt failed
+                        return {
+                            "success": False,
+                            "attempts": max_retries,
+                            "final_error": str(retry_error)
+                        }
+            
+            return {
+                "success": False,
+                "attempts": max_retries,
+                "error": "All retry attempts exhausted"
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to retry transmission {transmission_record.id}: {e}")
+            return {
+                "success": False,
+                "attempts": 0,
+                "error": str(e)
+            }
+    
+    async def send_custom_payload(
+        self, 
+        payload: Dict[str, Any],
+        endpoint: str,
+        method: str = "POST",
+        headers: Dict[str, str] = None,
+        timeout: int = 30
+    ) -> Dict[str, Any]:
+        """Send custom payload to any endpoint."""
+        try:
+            # Prepare headers
+            request_headers = self._http_client.headers.copy()
+            if headers:
+                request_headers.update(headers)
+            
+            logger.info(f"Sending custom payload to {endpoint} via {method}")
+            
+            # Make request based on method
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                if method.upper() == "POST":
+                    response = await client.post(endpoint, json=payload, headers=request_headers)
+                elif method.upper() == "PUT":
+                    response = await client.put(endpoint, json=payload, headers=request_headers)
+                elif method.upper() == "PATCH":
+                    response = await client.patch(endpoint, json=payload, headers=request_headers)
+                elif method.upper() == "GET":
+                    response = await client.get(endpoint, params=payload, headers=request_headers)
+                else:
+                    raise ExternalAPIError(f"Unsupported HTTP method: {method}")
+            
+            await self._handle_response_errors(response)
+            
+            # Parse response
+            response_data = {}
+            try:
+                if response.content:
+                    response_data = response.json()
+            except json.JSONDecodeError:
+                response_data = {"raw_response": response.text}
+            
+            logger.info(f"Custom payload sent successfully. Status: {response.status_code}")
+            return response_data
+            
+        except Exception as e:
+            logger.error(f"Failed to send custom payload: {e}")
+            raise ExternalAPIError(f"Failed to send custom payload: {e}")
+    
+    async def transform_email_for_api(self, email: Email) -> Dict[str, Any]:
+        """Transform email domain object to API payload format."""
+        try:
+            # Transform Email domain object to dictionary
+            email_data = {
+                "id": str(email.id),
+                "message_id": email.message_id,
+                "conversation_id": email.conversation_id,
+                "subject": email.subject,
+                "body": email.body,
+                "body_preview": email.body_preview,
+                "sender": email.sender,
+                "recipients": email.recipients,
+                "cc_recipients": email.cc_recipients,
+                "bcc_recipients": email.bcc_recipients,
+                "received_at": email.received_at.isoformat() + "Z" if email.received_at else None,
+                "sent_at": email.sent_at.isoformat() + "Z" if email.sent_at else None,
+                "importance": email.importance,
+                "is_read": email.is_read,
+                "has_attachments": email.has_attachments,
+                "attachments": email.attachments,
+                "folder": email.folder,
+                "account_id": str(email.account_id) if email.account_id else None,
+                "created_at": email.created_at.isoformat() + "Z" if email.created_at else None,
+                "updated_at": email.updated_at.isoformat() + "Z" if email.updated_at else None
+            }
+            
+            # Use existing payload preparation method
+            return self._prepare_email_payload(email_data)
+            
+        except Exception as e:
+            logger.error(f"Failed to transform email for API: {e}")
+            raise ExternalAPIError(f"Failed to transform email: {e}")
+    
+    async def handle_api_error(
+        self, 
+        error: Exception,
+        request_data: Dict[str, Any],
+        endpoint: str
+    ) -> Dict[str, Any]:
+        """Handle API errors and determine retry strategy."""
+        try:
+            error_info = {
+                "error_type": type(error).__name__,
+                "error_message": str(error),
+                "endpoint": endpoint,
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "request_data_size": len(json.dumps(request_data, default=str)),
+                "retry_recommended": False,
+                "retry_after_seconds": None,
+                "action": "log_and_fail"
+            }
+            
+            # Determine retry strategy based on error type
+            if isinstance(error, ExternalAPIRateLimitError):
+                error_info.update({
+                    "retry_recommended": True,
+                    "retry_after_seconds": getattr(error, 'retry_after', 60),
+                    "action": "retry_with_backoff"
+                })
+            elif isinstance(error, ExternalAPINetworkError):
+                error_info.update({
+                    "retry_recommended": True,
+                    "retry_after_seconds": 30,
+                    "action": "retry_with_backoff"
+                })
+            elif isinstance(error, httpx.TimeoutException):
+                error_info.update({
+                    "retry_recommended": True,
+                    "retry_after_seconds": 60,
+                    "action": "retry_with_longer_timeout"
+                })
+            elif isinstance(error, ExternalAPIAuthenticationError):
+                error_info.update({
+                    "retry_recommended": False,
+                    "action": "check_credentials"
+                })
+            else:
+                # Generic server errors might be retryable
+                if hasattr(error, 'status_code') and 500 <= error.status_code < 600:
+                    error_info.update({
+                        "retry_recommended": True,
+                        "retry_after_seconds": 120,
+                        "action": "retry_with_backoff"
+                    })
+            
+            logger.error(f"API error handled: {error_info}")
+            return error_info
+            
+        except Exception as e:
+            logger.error(f"Failed to handle API error: {e}")
+            return {
+                "error_type": "ErrorHandlingFailed",
+                "error_message": str(e),
+                "original_error": str(error),
+                "retry_recommended": False,
+                "action": "manual_intervention_required"
+            }
+    
+    async def log_transmission(
+        self, 
+        email_id: UUID,
+        payload: Dict[str, Any],
+        response: Dict[str, Any],
+        status: str,
+        error_message: str = None
+    ) -> TransmissionRecord:
+        """Log transmission attempt."""
+        try:
+            # Create transmission record
+            transmission_record = TransmissionRecord(
+                email_id=email_id,
+                endpoint=self.config.get_external_api_url(),
+                payload=payload,
+                response=response,
+                status=status,
+                error_message=error_message,
+                transmitted_at=datetime.utcnow(),
+                retry_count=0
+            )
+            
+            logger.info(f"Transmission logged: {transmission_record.id} for email {email_id}")
+            return transmission_record
+            
+        except Exception as e:
+            logger.error(f"Failed to log transmission: {e}")
+            # Return a minimal record even if logging fails
+            return TransmissionRecord(
+                email_id=email_id,
+                endpoint=self.config.get_external_api_url(),
+                status="logging_failed",
+                error_message=f"Failed to log transmission: {e}",
+                transmitted_at=datetime.utcnow(),
+                retry_count=0
+            )
+    
     # Helper methods
     def _prepare_email_payload(self, email_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Prepare email data payload for external API.
-        
-        Args:
-            email_data: Raw email data
-            
-        Returns:
-            Formatted payload for external API
-        """
-        # Standard payload format
+        """Prepare email data payload for external API."""
         payload = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "source": "GraphAPIQuery",
@@ -407,20 +637,12 @@ class ExternalAPIAdapter(ExternalAPIPort):
         
         return payload
     
-    def _prepare_notification_payload(self, notification_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Prepare notification payload for external API.
-        
-        Args:
-            notification_data: Raw notification data
-            
-        Returns:
-            Formatted notification payload
-        """
+    def _prepare_notification_payload(self, notification_data: Dict[str, Any], notification_type: str) -> Dict[str, Any]:
+        """Prepare notification payload for external API."""
         payload = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "source": "GraphAPIQuery",
-            "notification_type": notification_data.get("type", "info"),
+            "notification_type": notification_type,
             "title": notification_data.get("title", ""),
             "message": notification_data.get("message", ""),
             "data": notification_data.get("data", {}),
@@ -445,103 +667,42 @@ class ExternalAPIAdapter(ExternalAPIPort):
             error_message = f"HTTP {response.status_code}: {response.text}"
         
         if response.status_code == 401:
-            raise AuthenticationError(f"Authentication failed: {error_message}")
+            raise ExternalAPIAuthenticationError(f"Authentication failed: {error_message}")
         elif response.status_code == 403:
-            raise AuthenticationError(f"Access forbidden: {error_message}")
+            raise ExternalAPIAuthenticationError(f"Access forbidden: {error_message}")
         elif response.status_code == 429:
             # Rate limiting
             retry_after = response.headers.get("Retry-After", "60")
-            raise RateLimitError(f"Rate limit exceeded. Retry after {retry_after} seconds")
+            raise ExternalAPIRateLimitError(
+                f"Rate limit exceeded. Retry after {retry_after} seconds",
+                retry_after=int(retry_after)
+            )
         elif response.status_code >= 500:
             raise ExternalAPIError(f"Server error: {error_message}")
         else:
             raise ExternalAPIError(f"API error ({response.status_code}): {error_message}")
     
-    # Configuration and testing methods
-    async def test_connection(self) -> Dict[str, Any]:
-        """
-        Test connection to external API.
-        
-        Returns:
-            Dictionary with connection test results
-        """
-        test_results = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "api_url": self.config.get_external_api_url(),
-            "tests": {}
-        }
-        
-        # Test health check
+    # Health check and testing methods
+    async def health_check(self, endpoint: Optional[str] = None) -> bool:
+        """Check if external API is accessible."""
         try:
-            health_check_result = await self.health_check()
-            test_results["tests"]["health_check"] = {
-                "passed": health_check_result,
-                "message": "Health check passed" if health_check_result else "Health check failed"
-            }
-        except Exception as e:
-            test_results["tests"]["health_check"] = {
-                "passed": False,
-                "message": f"Health check error: {e}"
-            }
-        
-        # Test status endpoint
-        try:
-            status_data = await self.get_api_status()
-            test_results["tests"]["status_check"] = {
-                "passed": "error" not in status_data,
-                "message": "Status check passed" if "error" not in status_data else f"Status check failed: {status_data.get('error')}",
-                "data": status_data
-            }
-        except Exception as e:
-            test_results["tests"]["status_check"] = {
-                "passed": False,
-                "message": f"Status check error: {e}"
-            }
-        
-        # Test authentication (send a minimal test payload)
-        try:
-            test_payload = {
-                "message_id": "test-message-id",
-                "subject": "Connection Test",
-                "sender": "test@example.com",
-                "recipients": ["recipient@example.com"],
-                "received_at": datetime.utcnow().isoformat() + "Z",
-                "is_test": True
-            }
+            # Determine endpoint
+            if endpoint:
+                url = urljoin(self.config.get_external_api_url(), endpoint)
+            else:
+                url = urljoin(self.config.get_external_api_url(), "/health")
             
-            # Try to send test data (this might fail if the API doesn't accept test data)
-            result = await self.send_email_data(test_payload, endpoint="/test")
-            test_results["tests"]["authentication"] = {
-                "passed": result.success,
-                "message": "Authentication test passed" if result.success else f"Authentication test failed: {result.error_message}"
-            }
+            response = await self._http_client.get(url)
+            
+            is_healthy = response.status_code in [200, 204]
+            
+            if is_healthy:
+                logger.info(f"External API health check passed: {response.status_code}")
+            else:
+                logger.warning(f"External API health check failed: {response.status_code}")
+            
+            return is_healthy
+            
         except Exception as e:
-            test_results["tests"]["authentication"] = {
-                "passed": False,
-                "message": f"Authentication test error: {e}"
-            }
-        
-        # Overall result
-        all_tests_passed = all(test["passed"] for test in test_results["tests"].values())
-        test_results["overall_result"] = {
-            "passed": all_tests_passed,
-            "message": "All tests passed" if all_tests_passed else "Some tests failed"
-        }
-        
-        logger.info(f"Connection test completed. Overall result: {'PASS' if all_tests_passed else 'FAIL'}")
-        return test_results
-    
-    def get_configuration_info(self) -> Dict[str, Any]:
-        """
-        Get configuration information (with sensitive data masked).
-        
-        Returns:
-            Dictionary with configuration details
-        """
-        return {
-            "api_url": self.config.get_external_api_url(),
-            "api_key_configured": bool(self.config.get_external_api_key()),
-            "timeout": 30.0,
-            "max_retries": 3,
-            "retry_strategy": "exponential_backoff"
-        }
+            logger.error(f"External API health check failed: {e}")
+            return False

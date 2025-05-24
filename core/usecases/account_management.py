@@ -15,15 +15,14 @@ from ..ports.config import ConfigPort
 # Request/Response Models
 class CreateAccountRequest(BaseModel):
     """Request model for creating an account."""
-    user_id: UUID
+    user_id: str
     email: str = Field(..., description="Email address for the account")
     display_name: Optional[str] = Field(None, description="Display name for the account")
-    is_active: bool = Field(True, description="Whether the account is active")
 
 
 class CreateAccountResponse(BaseModel):
     """Response model for account creation."""
-    account_id: UUID
+    account_id: str
     email: str
     display_name: Optional[str]
     is_active: bool
@@ -33,8 +32,8 @@ class CreateAccountResponse(BaseModel):
 
 class AccountDetailResponse(BaseModel):
     """Response model for account details."""
-    account_id: UUID
-    user_id: UUID
+    account_id: str
+    user_id: str
     email: str
     display_name: Optional[str]
     is_active: bool
@@ -59,20 +58,20 @@ class UpdateAccountRequest(BaseModel):
 
 class UpdateAccountResponse(BaseModel):
     """Response model for account update."""
-    account_id: UUID
+    account_id: str
     message: str = "Account updated successfully"
 
 
 class AuthorizeAccountRequest(BaseModel):
     """Request model for account authorization."""
-    account_id: UUID
+    account_id: str
     authorization_code: str
     state: Optional[str] = None
 
 
 class AuthorizeAccountResponse(BaseModel):
     """Response model for account authorization."""
-    account_id: UUID
+    account_id: str
     email: str
     token_expires_at: datetime
     message: str = "Account authorized successfully"
@@ -117,12 +116,11 @@ class AccountManagementUseCase:
         if existing_account:
             raise ValueError(f"Account with email {request.email} already exists")
         
-        # Create new account
+        # Create new account using Account domain model fields
         account = Account(
             user_id=request.user_id,
-            email=request.email,
-            display_name=request.display_name,
-            is_active=request.is_active
+            email_address=request.email,  # Account domain uses email_address
+            display_name=request.display_name
         )
         
         # Save account
@@ -130,13 +128,13 @@ class AccountManagementUseCase:
         
         return CreateAccountResponse(
             account_id=saved_account.id,
-            email=saved_account.email,
+            email=saved_account.email_address,  # Convert back to email for response
             display_name=saved_account.display_name,
-            is_active=saved_account.is_active,
+            is_active=saved_account.is_active(),
             created_at=saved_account.created_at
         )
     
-    async def get_account_by_id(self, account_id: UUID) -> Optional[AccountDetailResponse]:
+    async def get_account_by_id(self, account_id: str) -> Optional[AccountDetailResponse]:
         """
         Get account details by ID.
         
@@ -153,16 +151,16 @@ class AccountManagementUseCase:
         return AccountDetailResponse(
             account_id=account.id,
             user_id=account.user_id,
-            email=account.email,
+            email=account.email_address,
             display_name=account.display_name,
-            is_active=account.is_active,
+            is_active=account.is_active(),
             token_expires_at=account.token_expires_at,
             last_sync_at=account.last_sync_at,
             created_at=account.created_at,
             updated_at=account.updated_at
         )
     
-    async def get_accounts_by_user_id(self, user_id: UUID) -> AccountListResponse:
+    async def get_accounts_by_user_id(self, user_id: str) -> AccountListResponse:
         """
         Get all accounts for a user.
         
@@ -178,15 +176,15 @@ class AccountManagementUseCase:
         active_count = 0
         
         for account in accounts:
-            if account.is_active:
+            if account.is_active():
                 active_count += 1
             
             account_details.append(AccountDetailResponse(
                 account_id=account.id,
                 user_id=account.user_id,
-                email=account.email,
+                email=account.email_address,
                 display_name=account.display_name,
-                is_active=account.is_active,
+                is_active=account.is_active(),
                 token_expires_at=account.token_expires_at,
                 last_sync_at=account.last_sync_at,
                 created_at=account.created_at,
@@ -216,15 +214,15 @@ class AccountManagementUseCase:
         active_count = 0
         
         for account in accounts:
-            if account.is_active:
+            if account.is_active():
                 active_count += 1
             
             account_details.append(AccountDetailResponse(
                 account_id=account.id,
                 user_id=account.user_id,
-                email=account.email,
+                email=account.email_address,
                 display_name=account.display_name,
-                is_active=account.is_active,
+                is_active=account.is_active(),
                 token_expires_at=account.token_expires_at,
                 last_sync_at=account.last_sync_at,
                 created_at=account.created_at,
@@ -251,9 +249,9 @@ class AccountManagementUseCase:
             account_details.append(AccountDetailResponse(
                 account_id=account.id,
                 user_id=account.user_id,
-                email=account.email,
+                email=account.email_address,
                 display_name=account.display_name,
-                is_active=account.is_active,
+                is_active=account.is_active(),
                 token_expires_at=account.token_expires_at,
                 last_sync_at=account.last_sync_at,
                 created_at=account.created_at,
@@ -268,7 +266,7 @@ class AccountManagementUseCase:
     
     async def update_account(
         self, 
-        account_id: UUID, 
+        account_id: str, 
         request: UpdateAccountRequest
     ) -> UpdateAccountResponse:
         """
@@ -293,14 +291,17 @@ class AccountManagementUseCase:
             account.display_name = request.display_name
         
         if request.is_active is not None:
-            account.is_active = request.is_active
+            if request.is_active:
+                account.activate()
+            else:
+                account.deactivate()
         
         # Save updated account
         await self.account_repository.update(account)
         
         return UpdateAccountResponse(account_id=account_id)
     
-    async def delete_account(self, account_id: UUID) -> bool:
+    async def delete_account(self, account_id: str) -> bool:
         """
         Delete an account.
         
@@ -319,7 +320,7 @@ class AccountManagementUseCase:
         
         return await self.account_repository.delete(account_id)
     
-    async def get_authorization_url(self, account_id: UUID) -> str:
+    async def get_authorization_url(self, account_id: str) -> str:
         """
         Get OAuth authorization URL for account.
         
@@ -381,11 +382,11 @@ class AccountManagementUseCase:
         
         return AuthorizeAccountResponse(
             account_id=request.account_id,
-            email=updated_account.email,
+            email=updated_account.email_address,
             token_expires_at=updated_account.token_expires_at
         )
     
-    async def refresh_account_token(self, account_id: UUID) -> bool:
+    async def refresh_account_token(self, account_id: str) -> bool:
         """
         Refresh account access token.
         

@@ -115,6 +115,15 @@ class Settings(BaseSettings):
             raise ValueError(f"Invalid log level: {v}. Must be one of {valid_levels}")
         return v.upper()
     
+    @field_validator("log_format")
+    @classmethod
+    def validate_log_format(cls, v):
+        """Validate and fix log format."""
+        # If format is 'json' or invalid, use default format
+        if v == "json" or not isinstance(v, str):
+            return "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        return v
+    
     @field_validator("api_port")
     @classmethod
     def validate_api_port(cls, v):
@@ -201,9 +210,14 @@ class ConfigAdapter(ConfigPort):
     
     def _setup_logging(self) -> None:
         """Setup logging configuration."""
+        # Ensure log format is valid
+        log_format = self._settings.log_format
+        if log_format == "json" or not log_format:
+            log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        
         logging.basicConfig(
             level=getattr(logging, self._settings.log_level),
-            format=self._settings.log_format
+            format=log_format
         )
         
         # Create logger for this adapter

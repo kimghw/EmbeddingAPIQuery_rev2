@@ -115,16 +115,20 @@ class SQLUserRepository(UserRepository):
             logger.error(f"Error finding user by email {email}: {e}")
             raise RepositoryError(f"Failed to find user: {e}")
     
-    async def find_all(self, limit: int = 100, offset: int = 0) -> List[User]:
+    async def find_all(self, skip: int = 0, limit: int = 100) -> List[User]:
         """Find all users with pagination."""
         try:
-            stmt = select(UserModel).offset(offset).limit(limit).order_by(UserModel.created_at.desc())
+            stmt = select(UserModel).offset(skip).limit(limit).order_by(UserModel.created_at.desc())
             result = await self.session.execute(stmt)
             user_models = result.scalars().all()
             return [user_model_to_domain(model) for model in user_models]
         except Exception as e:
             logger.error(f"Error finding all users: {e}")
             raise RepositoryError(f"Failed to find users: {e}")
+    
+    async def update(self, user: User) -> User:
+        """Update a user."""
+        return await self.save(user)
     
     async def delete(self, user_id: UUID) -> bool:
         """Delete user by ID."""
@@ -138,6 +142,28 @@ class SQLUserRepository(UserRepository):
         except Exception as e:
             logger.error(f"Error deleting user {user_id}: {e}")
             raise RepositoryError(f"Failed to delete user: {e}")
+    
+    async def exists_by_username(self, username: str) -> bool:
+        """Check if user exists by username."""
+        try:
+            stmt = select(func.count(UserModel.id)).where(UserModel.username == username)
+            result = await self.session.execute(stmt)
+            count = result.scalar()
+            return count > 0
+        except Exception as e:
+            logger.error(f"Error checking user existence by username {username}: {e}")
+            raise RepositoryError(f"Failed to check user existence: {e}")
+    
+    async def exists_by_email(self, email: str) -> bool:
+        """Check if user exists by email."""
+        try:
+            stmt = select(func.count(UserModel.id)).where(UserModel.email == email)
+            result = await self.session.execute(stmt)
+            count = result.scalar()
+            return count > 0
+        except Exception as e:
+            logger.error(f"Error checking user existence by email {email}: {e}")
+            raise RepositoryError(f"Failed to check user existence: {e}")
 
 
 class SQLAccountRepository(AccountRepository):
@@ -231,6 +257,21 @@ class SQLAccountRepository(AccountRepository):
             logger.error(f"Error finding active accounts: {e}")
             raise RepositoryError(f"Failed to find active accounts: {e}")
     
+    async def find_all(self, skip: int = 0, limit: int = 100) -> List[Account]:
+        """Find all accounts with pagination."""
+        try:
+            stmt = select(AccountModel).offset(skip).limit(limit).order_by(AccountModel.created_at.desc())
+            result = await self.session.execute(stmt)
+            account_models = result.scalars().all()
+            return [account_model_to_domain(model) for model in account_models]
+        except Exception as e:
+            logger.error(f"Error finding all accounts: {e}")
+            raise RepositoryError(f"Failed to find accounts: {e}")
+    
+    async def update(self, account: Account) -> Account:
+        """Update an account."""
+        return await self.save(account)
+    
     async def update_token_info(self, account_id: UUID, token_info: Dict[str, Any]) -> bool:
         """Update account token information."""
         try:
@@ -318,7 +359,7 @@ class SQLEmailRepository(EmailRepository):
                 existing.attachments = email.attachments
                 existing.processing_status = email.processing_status
                 existing.processed_at = email.processed_at
-                existing.metadata = email.metadata
+                existing.email_metadata = email.metadata
                 existing.updated_at = datetime.utcnow()
                 
                 await self.session.flush()
@@ -366,14 +407,14 @@ class SQLEmailRepository(EmailRepository):
             logger.error(f"Error finding email by message ID {message_id}: {e}")
             raise RepositoryError(f"Failed to find email: {e}")
     
-    async def find_by_account_id(self, account_id: UUID, limit: int = 100, offset: int = 0) -> List[Email]:
+    async def find_by_account_id(self, account_id: UUID, skip: int = 0, limit: int = 100) -> List[Email]:
         """Find emails by account ID."""
         try:
             stmt = (
                 select(EmailModel)
                 .where(EmailModel.account_id == account_id)
                 .order_by(EmailModel.received_at.desc())
-                .offset(offset)
+                .offset(skip)
                 .limit(limit)
             )
             result = await self.session.execute(stmt)
@@ -383,13 +424,35 @@ class SQLEmailRepository(EmailRepository):
             logger.error(f"Error finding emails by account ID {account_id}: {e}")
             raise RepositoryError(f"Failed to find emails: {e}")
     
-    async def find_by_processing_status(self, status: str, limit: int = 100) -> List[Email]:
+    async def find_recent_emails(self, account_id: UUID, hours: int = 24) -> List[Email]:
+        """Find recent emails within specified hours."""
+        try:
+            cutoff_time = datetime.utcnow() - timedelta(hours=hours)
+            stmt = (
+                select(EmailModel)
+                .where(
+                    and_(
+                        EmailModel.account_id == account_id,
+                        EmailModel.received_at >= cutoff_time
+                    )
+                )
+                .order_by(EmailModel.received_at.desc())
+            )
+            result = await self.session.execute(stmt)
+            email_models = result.scalars().all()
+            return [email_model_to_domain(model) for model in email_models]
+        except Exception as e:
+            logger.error(f"Error finding recent emails for account {account_id}: {e}")
+            raise RepositoryError(f"Failed to find recent emails: {e}")
+    
+    async def find_by_status(self, status: str, skip: int = 0, limit: int = 100) -> List[Email]:
         """Find emails by processing status."""
         try:
             stmt = (
                 select(EmailModel)
                 .where(EmailModel.processing_status == status)
                 .order_by(EmailModel.created_at.asc())
+                .offset(skip)
                 .limit(limit)
             )
             result = await self.session.execute(stmt)
@@ -398,6 +461,21 @@ class SQLEmailRepository(EmailRepository):
         except Exception as e:
             logger.error(f"Error finding emails by status {status}: {e}")
             raise RepositoryError(f"Failed to find emails: {e}")
+    
+    async def find_all(self, skip: int = 0, limit: int = 100) -> List[Email]:
+        """Find all emails with pagination."""
+        try:
+            stmt = select(EmailModel).offset(skip).limit(limit).order_by(EmailModel.created_at.desc())
+            result = await self.session.execute(stmt)
+            email_models = result.scalars().all()
+            return [email_model_to_domain(model) for model in email_models]
+        except Exception as e:
+            logger.error(f"Error finding all emails: {e}")
+            raise RepositoryError(f"Failed to find emails: {e}")
+    
+    async def update(self, email: Email) -> Email:
+        """Update an email."""
+        return await self.save(email)
     
     async def update_processing_status(self, email_id: UUID, status: str) -> bool:
         """Update email processing status."""
@@ -482,7 +560,7 @@ class SQLTransmissionRecordRepository(TransmissionRecordRepository):
                 existing.started_at = record.started_at
                 existing.completed_at = record.completed_at
                 existing.processing_time_ms = record.processing_time_ms
-                existing.metadata = record.metadata
+                existing.record_metadata = record.metadata
                 existing.updated_at = datetime.utcnow()
                 
                 await self.session.flush()
@@ -522,13 +600,14 @@ class SQLTransmissionRecordRepository(TransmissionRecordRepository):
             logger.error(f"Error finding transmission records by email ID {email_id}: {e}")
             raise RepositoryError(f"Failed to find transmission records: {e}")
     
-    async def find_by_status(self, status: str, limit: int = 100) -> List[TransmissionRecord]:
+    async def find_by_status(self, status: str, skip: int = 0, limit: int = 100) -> List[TransmissionRecord]:
         """Find transmission records by status."""
         try:
             stmt = (
                 select(TransmissionRecordModel)
                 .where(TransmissionRecordModel.status == status)
                 .order_by(TransmissionRecordModel.created_at.asc())
+                .offset(skip)
                 .limit(limit)
             )
             result = await self.session.execute(stmt)
@@ -537,6 +616,26 @@ class SQLTransmissionRecordRepository(TransmissionRecordRepository):
         except Exception as e:
             logger.error(f"Error finding transmission records by status {status}: {e}")
             raise RepositoryError(f"Failed to find transmission records: {e}")
+    
+    async def find_failed_records(self, max_retry_count: int = 3) -> List[TransmissionRecord]:
+        """Find failed transmission records that need retry."""
+        try:
+            stmt = (
+                select(TransmissionRecordModel)
+                .where(
+                    and_(
+                        TransmissionRecordModel.status == "failed",
+                        TransmissionRecordModel.retry_count < max_retry_count
+                    )
+                )
+                .order_by(TransmissionRecordModel.created_at.asc())
+            )
+            result = await self.session.execute(stmt)
+            record_models = result.scalars().all()
+            return [transmission_record_model_to_domain(model) for model in record_models]
+        except Exception as e:
+            logger.error(f"Error finding failed transmission records: {e}")
+            raise RepositoryError(f"Failed to find failed transmission records: {e}")
     
     async def find_pending_records(self, limit: int = 100) -> List[TransmissionRecord]:
         """Find pending transmission records."""
@@ -554,27 +653,25 @@ class SQLTransmissionRecordRepository(TransmissionRecordRepository):
             logger.error(f"Error finding pending transmission records: {e}")
             raise RepositoryError(f"Failed to find pending transmission records: {e}")
     
-    async def find_retry_ready_records(self, limit: int = 100) -> List[TransmissionRecord]:
-        """Find records ready for retry."""
+    async def find_all(self, skip: int = 0, limit: int = 100) -> List[TransmissionRecord]:
+        """Find all transmission records with pagination."""
         try:
-            now = datetime.utcnow()
             stmt = (
                 select(TransmissionRecordModel)
-                .where(
-                    and_(
-                        TransmissionRecordModel.status == "retry",
-                        TransmissionRecordModel.next_retry_at <= now
-                    )
-                )
-                .order_by(TransmissionRecordModel.priority.asc(), TransmissionRecordModel.next_retry_at.asc())
+                .order_by(TransmissionRecordModel.created_at.desc())
+                .offset(skip)
                 .limit(limit)
             )
             result = await self.session.execute(stmt)
             record_models = result.scalars().all()
             return [transmission_record_model_to_domain(model) for model in record_models]
         except Exception as e:
-            logger.error(f"Error finding retry ready transmission records: {e}")
-            raise RepositoryError(f"Failed to find retry ready transmission records: {e}")
+            logger.error(f"Error finding all transmission records: {e}")
+            raise RepositoryError(f"Failed to find transmission records: {e}")
+    
+    async def update(self, record: TransmissionRecord) -> TransmissionRecord:
+        """Update a transmission record."""
+        return await self.save(record)
     
     async def update_status(self, record_id: UUID, status: str, error_message: Optional[str] = None) -> bool:
         """Update transmission record status."""
@@ -616,7 +713,7 @@ class SQLTransmissionRecordRepository(TransmissionRecordRepository):
             logger.error(f"Error incrementing retry count for transmission record {record_id}: {e}")
             raise RepositoryError(f"Failed to increment retry count: {e}")
     
-    async def cleanup_old_records(self, days: int) -> int:
+    async def cleanup_old_records(self, days: int = 30) -> int:
         """Delete transmission records older than specified days."""
         try:
             cutoff_date = datetime.utcnow() - timedelta(days=days)
@@ -634,25 +731,10 @@ class SQLTransmissionRecordRepository(TransmissionRecordRepository):
             logger.error(f"Error cleaning up old transmission records: {e}")
             raise RepositoryError(f"Failed to cleanup old transmission records: {e}")
     
-    async def find_all(self, limit: int = 100, offset: int = 0) -> List[TransmissionRecord]:
-        """Find all transmission records with pagination."""
-        try:
-            stmt = (
-                select(TransmissionRecordModel)
-                .order_by(TransmissionRecordModel.created_at.desc())
-                .offset(offset)
-                .limit(limit)
-            )
-            result = await self.session.execute(stmt)
-            record_models = result.scalars().all()
-            return [transmission_record_model_to_domain(model) for model in record_models]
-        except Exception as e:
-            logger.error(f"Error finding all transmission records: {e}")
-            raise RepositoryError(f"Failed to find transmission records: {e}")
-    
     async def delete(self, record_id: UUID) -> bool:
         """Delete transmission record by ID."""
         try:
+            recor
             record_model = await self.session.get(TransmissionRecordModel, record_id)
             if record_model:
                 await self.session.delete(record_model)

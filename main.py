@@ -2,6 +2,7 @@
 
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,11 +13,6 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from config.settings import get_config
 from adapters.api.routers import create_api_router
 from adapters.api.dependencies import cleanup_dependencies
-from adapters.api.routers import (
-    handle_validation_error, 
-    handle_http_exception, 
-    handle_general_exception
-)
 
 
 # Configure logging
@@ -89,7 +85,8 @@ def create_app() -> FastAPI:
             "status": "running",
             "environment": config.ENVIRONMENT,
             "docs_url": "/docs" if config.ENVIRONMENT == "development" else None,
-            "api_prefix": "/api/v1"
+            "api_prefix": "/api/v1",
+            "timestamp": datetime.utcnow().isoformat()
         }
     
     @app.get("/health")
@@ -97,15 +94,9 @@ def create_app() -> FastAPI:
         """Basic health check endpoint."""
         return {
             "status": "healthy",
-            "timestamp": "2024-01-01T00:00:00Z",
+            "timestamp": datetime.utcnow().isoformat(),
             "version": "1.0.0"
         }
-    
-    # Add exception handlers
-    app.add_exception_handler(RequestValidationError, handle_validation_error)
-    app.add_exception_handler(HTTPException, handle_http_exception)
-    app.add_exception_handler(StarletteHTTPException, handle_http_exception)
-    app.add_exception_handler(Exception, handle_general_exception)
     
     return app
 
@@ -122,8 +113,8 @@ if __name__ == "__main__":
     # Run the application
     uvicorn.run(
         "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=config.ENVIRONMENT == "development",
+        host=config.API_HOST,
+        port=config.API_PORT,
+        reload=config.API_RELOAD,
         log_level="info"
     )
