@@ -1,10 +1,10 @@
 """Pydantic schemas for API request/response models."""
 
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field, EmailStr, ConfigDict
 
 
 # Base schemas
@@ -12,7 +12,7 @@ class BaseResponse(BaseModel):
     """Base response schema."""
     success: bool
     message: Optional[str] = None
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class ErrorResponse(BaseResponse):
@@ -40,8 +40,7 @@ class UserResponse(UserBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class UserListResponse(BaseResponse):
@@ -79,8 +78,7 @@ class AccountResponse(AccountBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AccountListResponse(BaseResponse):
@@ -137,8 +135,7 @@ class EmailResponse(EmailBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class EmailListResponse(BaseResponse):
@@ -179,8 +176,7 @@ class TransmissionRecordResponse(BaseModel):
     created_at: datetime
     updated_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TransmissionListResponse(BaseResponse):
@@ -218,7 +214,7 @@ class RetryTransmissionRequest(BaseModel):
 class HealthCheckResponse(BaseModel):
     """Health check response schema."""
     status: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     services: Dict[str, bool]
     version: str = "1.0.0"
 
@@ -227,7 +223,7 @@ class DatabaseHealthResponse(BaseModel):
     """Database health response schema."""
     status: str
     connection: bool
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 # Configuration schemas
@@ -244,7 +240,7 @@ class ConfigurationResponse(BaseModel):
 
 class ConnectionTestResponse(BaseModel):
     """Connection test response schema."""
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     tests: Dict[str, Dict[str, Any]]
     overall_result: Dict[str, Any]
 
@@ -313,7 +309,7 @@ class TransmissionFilterParams(BaseModel):
 # Batch operation schemas
 class BatchOperationRequest(BaseModel):
     """Batch operation request schema."""
-    ids: List[UUID] = Field(..., min_items=1, max_items=100)
+    ids: List[UUID] = Field(..., min_length=1, max_length=100)
 
 
 class BatchOperationResponse(BaseResponse):
@@ -348,7 +344,7 @@ class SystemStatistics(BaseModel):
     transmissions: TransmissionStatistics
     accounts: Dict[str, int]
     uptime: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class SystemStatisticsResponse(BaseResponse):

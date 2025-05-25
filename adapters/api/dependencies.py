@@ -52,15 +52,8 @@ async def get_db_session(
     db_adapter = Depends(get_db_adapter_dependency)
 ) -> AsyncGenerator[AsyncSession, None]:
     """Get database session dependency."""
-    async with db_adapter.get_async_session() as session:
-        try:
-            yield session
-        except Exception as e:
-            logger.error(f"Database session error: {e}")
-            await session.rollback()
-            raise
-        finally:
-            await session.close()
+    async with db_adapter.async_session_scope() as session:
+        yield session
 
 
 def get_graph_api_dependency(config: ConfigAdapter = Depends(get_config_dependency)) -> GraphAPIAdapter:
@@ -111,8 +104,8 @@ def get_account_usecase(
 ) -> AccountManagementUseCase:
     """Get account management use case dependency."""
     return AccountManagementUseCase(
-        user_repo=user_repo,
-        account_repo=account_repo,
+        user_repository=user_repo,
+        account_repository=account_repo,
         graph_api=graph_api,
         config=config
     )
@@ -126,8 +119,8 @@ def get_email_usecase(
 ) -> EmailDetectionUseCase:
     """Get email detection use case dependency."""
     return EmailDetectionUseCase(
-        account_repo=account_repo,
-        email_repo=email_repo,
+        account_repository=account_repo,
+        email_repository=email_repo,
         graph_api=graph_api,
         config=config
     )
@@ -141,8 +134,8 @@ def get_transmission_usecase(
 ) -> ExternalTransmissionUseCase:
     """Get external transmission use case dependency."""
     return ExternalTransmissionUseCase(
-        email_repo=email_repo,
-        transmission_repo=transmission_repo,
+        email_repository=email_repo,
+        transmission_repository=transmission_repo,
         external_api=external_api,
         config=config
     )

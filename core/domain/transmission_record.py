@@ -1,8 +1,8 @@
-"""Transmission record domain entity for tracking external API transmissions."""
+"""Transmission record domain entity."""
 
-from datetime import datetime
-from typing import Optional, Dict, Any
-from pydantic import BaseModel, Field, validator
+from datetime import datetime, UTC
+from typing import Optional, Dict, Any, List
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from enum import Enum
 
 
@@ -12,6 +12,7 @@ class TransmissionStatus(str, Enum):
     IN_PROGRESS = "in_progress"
     SUCCESS = "success"
     FAILED = "failed"
+    RETRYING = "retrying"
     CANCELLED = "cancelled"
 
 
@@ -20,48 +21,66 @@ class TransmissionMethod(str, Enum):
     HTTP_POST = "http_post"
     HTTP_PUT = "http_put"
     WEBHOOK = "webhook"
-    MESSAGE_QUEUE = "message_queue"
+    EMAIL = "email"
+    FTP = "ftp"
+    SFTP = "sftp"
+
+
+class TransmissionPriority(str, Enum):
+    """Transmission priority enumeration."""
+    LOW = "low"
+    NORMAL = "normal"
+    HIGH = "high"
+    URGENT = "urgent"
 
 
 class TransmissionRecord(BaseModel):
-    """Transmission record domain entity for tracking external API calls."""
+    """Transmission record domain entity for tracking external data transmissions."""
     
     id: Optional[str] = Field(default=None, description="Transmission record unique identifier")
-    email_id: str = Field(..., description="Associated email ID")
     account_id: str = Field(..., description="Associated account ID")
+    email_id: Optional[str] = Field(default=None, description="Associated email ID")
     
     # Transmission details
-    method: TransmissionMethod = Field(default=TransmissionMethod.HTTP_POST, description="Transmission method")
+    method: TransmissionMethod = Field(..., description="Transmission method")
     endpoint_url: str = Field(..., description="Target endpoint URL")
-    payload: Dict[str, Any] = Field(default_factory=dict, description="Transmission payload")
-    headers: Dict[str, str] = Field(default_factory=dict, description="HTTP headers")
+    priority: TransmissionPriority = Field(default=TransmissionPriority.NORMAL, description="Transmission priority")
+    
+    # Request data
+    request_headers: Dict[str, str] = Field(default_factory=dict, description="HTTP headers")
+    request_body: Optional[str] = Field(default=None, description="Request body content")
+    request_method: str = Field(default="POST", description="HTTP method")
+    content_type: str = Field(default="application/json", description="Content type")
+    
+    # Response data
+    response_status_code: Optional[int] = Field(default=None, description="HTTP response status code")
+    response_headers: Dict[str, str] = Field(default_factory=dict, description="Response headers")
+    response_body: Optional[str] = Field(default=None, description="Response body content")
+    response_time_ms: Optional[int] = Field(default=None, description="Response time in milliseconds")
     
     # Status tracking
     status: TransmissionStatus = Field(default=TransmissionStatus.PENDING, description="Transmission status")
     retry_count: int = Field(default=0, description="Number of retry attempts")
-    max_retries: int = Field(default=3, description="Maximum number of retries")
-    
-    # Response tracking
-    response_status_code: Optional[int] = Field(default=None, description="HTTP response status code")
-    response_body: Optional[str] = Field(default=None, description="Response body")
-    response_headers: Dict[str, str] = Field(default_factory=dict, description="Response headers")
-    
-    # Error tracking
-    error_message: Optional[str] = Field(default=None, description="Error message")
-    error_details: Optional[Dict[str, Any]] = Field(default=None, description="Detailed error information")
+    max_retries: int = Field(default=3, description="Maximum retry attempts")
     
     # Timestamps
-    created_at: Optional[datetime] = Field(default=None, description="Record creation timestamp")
+    created_at: Optional[datetime] = Field(default=None, description="Creation timestamp")
     updated_at: Optional[datetime] = Field(default=None, description="Last update timestamp")
-    started_at: Optional[datetime] = Field(default=None, description="Transmission start timestamp")
-    completed_at: Optional[datetime] = Field(default=None, description="Transmission completion timestamp")
-    next_retry_at: Optional[datetime] = Field(default=None, description="Next retry timestamp")
+    scheduled_at: Optional[datetime] = Field(default=None, description="Scheduled transmission time")
+    started_at: Optional[datetime] = Field(default=None, description="Transmission start time")
+    completed_at: Optional[datetime] = Field(default=None, description="Transmission completion time")
     
-    # Performance metrics
-    duration_ms: Optional[int] = Field(default=None, description="Transmission duration in milliseconds")
-    payload_size_bytes: Optional[int] = Field(default=None, description="Payload size in bytes")
+    # Error handling
+    error_message: Optional[str] = Field(default=None, description="Error message")
+    error_code: Optional[str] = Field(default=None, description="Error code")
+    last_error_at: Optional[datetime] = Field(default=None, description="Last error timestamp")
     
-    @validator("endpoint_url")
+    # Metadata
+    tags: List[str] = Field(default_factory=list, description="Transmission tags")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+    
+    @field_validator("endpoint_url")
+    @classmethod
     def validate_endpoint_url(cls, v):
         """Validate endpoint URL format."""
         import re
@@ -73,157 +92,155 @@ class TransmissionRecord(BaseModel):
     def start_transmission(self) -> None:
         """Mark transmission as started."""
         self.status = TransmissionStatus.IN_PROGRESS
-        self.started_at = datetime.utcnow()
-        self.updated_at = datetime.utcnow()
+        self.started_at = datetime.now(UTC)
+        self.updated_at = datetime.now(UTC)
     
-    def mark_success(self, response_status_code: int, response_body: str = None, 
-                    response_headers: Dict[str, str] = None, duration_ms: int = None) -> None:
+    def mark_success(self, response_status: int, response_body: str = None, 
+                    response_headers: Dict[str, str] = None, response_time_ms: int = None) -> None:
         """Mark transmission as successful."""
         self.status = TransmissionStatus.SUCCESS
-        self.response_status_code = response_status_code
-        self.response_body = response_body
-        self.response_headers = response_headers or {}
-        self.completed_at = datetime.utcnow()
-        self.updated_at = datetime.utcnow()
-        if duration_ms:
-            self.duration_ms = duration_ms
-        
-        # Clear error information
+        self.response_status_code = response_status
+        if response_body:
+            self.response_body = response_body
+        if response_headers:
+            self.response_headers = response_headers
+        if response_time_ms:
+            self.response_time_ms = response_time_ms
+        self.completed_at = datetime.now(UTC)
+        self.updated_at = datetime.now(UTC)
         self.error_message = None
-        self.error_details = None
-        self.next_retry_at = None
+        self.error_code = None
     
-    def mark_failed(self, error_message: str, error_details: Dict[str, Any] = None,
-                   response_status_code: int = None, response_body: str = None) -> None:
+    def mark_failed(self, error_message: str, error_code: str = None, 
+                   response_status: int = None, response_body: str = None) -> None:
         """Mark transmission as failed."""
         self.status = TransmissionStatus.FAILED
         self.error_message = error_message
-        self.error_details = error_details
-        self.response_status_code = response_status_code
-        self.response_body = response_body
-        self.completed_at = datetime.utcnow()
-        self.updated_at = datetime.utcnow()
-        
-        # Schedule retry if applicable
-        if self.should_retry():
-            self.schedule_retry()
+        self.error_code = error_code
+        self.last_error_at = datetime.now(UTC)
+        if response_status:
+            self.response_status_code = response_status
+        if response_body:
+            self.response_body = response_body
+        self.updated_at = datetime.now(UTC)
     
-    def mark_cancelled(self, reason: str = None) -> None:
-        """Mark transmission as cancelled."""
+    def increment_retry(self) -> None:
+        """Increment retry count and mark for retry."""
+        self.retry_count += 1
+        if self.retry_count <= self.max_retries:
+            self.status = TransmissionStatus.RETRYING
+        else:
+            self.status = TransmissionStatus.FAILED
+        self.updated_at = datetime.now(UTC)
+    
+    def cancel(self, reason: str = None) -> None:
+        """Cancel the transmission."""
         self.status = TransmissionStatus.CANCELLED
         if reason:
             self.error_message = f"Cancelled: {reason}"
-        self.completed_at = datetime.utcnow()
-        self.updated_at = datetime.utcnow()
-        self.next_retry_at = None
+        self.completed_at = datetime.now(UTC)
+        self.updated_at = datetime.now(UTC)
+    
+    def reset_for_retry(self) -> None:
+        """Reset transmission for retry."""
+        self.status = TransmissionStatus.PENDING
+        self.started_at = None
+        self.completed_at = None
+        self.response_status_code = None
+        self.response_body = None
+        self.response_headers = {}
+        self.response_time_ms = None
+        self.updated_at = datetime.now(UTC)
     
     def should_retry(self) -> bool:
         """Check if transmission should be retried."""
         return (
-            self.status == TransmissionStatus.FAILED and
+            self.status in [TransmissionStatus.FAILED, TransmissionStatus.RETRYING] and
             self.retry_count < self.max_retries
         )
-    
-    def schedule_retry(self, delay_seconds: int = None) -> None:
-        """Schedule next retry attempt."""
-        if not self.should_retry():
-            return
-        
-        self.retry_count += 1
-        
-        # Calculate exponential backoff delay
-        if delay_seconds is None:
-            base_delay = 60  # 1 minute base delay
-            delay_seconds = base_delay * (2 ** (self.retry_count - 1))
-            # Cap at 30 minutes
-            delay_seconds = min(delay_seconds, 1800)
-        
-        self.next_retry_at = datetime.utcnow() + datetime.timedelta(seconds=delay_seconds)
-        self.status = TransmissionStatus.PENDING
-        self.updated_at = datetime.utcnow()
-    
-    def reset_for_retry(self) -> None:
-        """Reset transmission for manual retry."""
-        self.status = TransmissionStatus.PENDING
-        self.started_at = None
-        self.completed_at = None
-        self.next_retry_at = None
-        self.error_message = None
-        self.error_details = None
-        self.response_status_code = None
-        self.response_body = None
-        self.response_headers = {}
-        self.duration_ms = None
-        self.updated_at = datetime.utcnow()
-    
-    def is_ready_for_retry(self) -> bool:
-        """Check if transmission is ready for retry."""
-        if not self.should_retry():
-            return False
-        
-        if self.next_retry_at is None:
-            return True
-        
-        return datetime.utcnow() >= self.next_retry_at
     
     def is_completed(self) -> bool:
         """Check if transmission is completed (success or final failure)."""
         return self.status in [
             TransmissionStatus.SUCCESS,
+            TransmissionStatus.FAILED,
             TransmissionStatus.CANCELLED
-        ] or (
-            self.status == TransmissionStatus.FAILED and 
-            not self.should_retry()
-        )
+        ] and (self.status != TransmissionStatus.FAILED or self.retry_count >= self.max_retries)
+    
+    def is_pending(self) -> bool:
+        """Check if transmission is pending."""
+        return self.status == TransmissionStatus.PENDING
+    
+    def is_in_progress(self) -> bool:
+        """Check if transmission is in progress."""
+        return self.status == TransmissionStatus.IN_PROGRESS
     
     def is_successful(self) -> bool:
         """Check if transmission was successful."""
         return self.status == TransmissionStatus.SUCCESS
     
-    def get_duration_seconds(self) -> Optional[float]:
-        """Get transmission duration in seconds."""
-        if self.duration_ms is not None:
-            return self.duration_ms / 1000.0
+    def is_failed(self) -> bool:
+        """Check if transmission failed."""
+        return self.status == TransmissionStatus.FAILED
+    
+    def get_duration_ms(self) -> Optional[int]:
+        """Get transmission duration in milliseconds."""
+        if self.started_at and self.completed_at:
+            delta = self.completed_at - self.started_at
+            return int(delta.total_seconds() * 1000)
         return None
     
-    def calculate_payload_size(self) -> int:
-        """Calculate payload size in bytes."""
-        import json
-        if self.payload:
-            payload_json = json.dumps(self.payload, ensure_ascii=False)
-            self.payload_size_bytes = len(payload_json.encode('utf-8'))
-        else:
-            self.payload_size_bytes = 0
-        return self.payload_size_bytes
+    def add_tag(self, tag: str) -> None:
+        """Add a tag to the transmission."""
+        if tag not in self.tags:
+            self.tags.append(tag)
+            self.updated_at = datetime.now(UTC)
     
-    def get_retry_delay_seconds(self) -> int:
-        """Get delay until next retry in seconds."""
-        if not self.next_retry_at:
-            return 0
-        
-        delta = self.next_retry_at - datetime.utcnow()
-        return max(0, int(delta.total_seconds()))
+    def remove_tag(self, tag: str) -> bool:
+        """Remove a tag from the transmission."""
+        if tag in self.tags:
+            self.tags.remove(tag)
+            self.updated_at = datetime.now(UTC)
+            return True
+        return False
     
-    class Config:
-        """Pydantic configuration."""
-        use_enum_values = True
-        json_encoders = {
-            datetime: lambda v: v.isoformat() if v else None
-        }
+    def has_tag(self, tag: str) -> bool:
+        """Check if transmission has a specific tag."""
+        return tag in self.tags
+    
+    def set_metadata(self, key: str, value: Any) -> None:
+        """Set metadata value."""
+        self.metadata[key] = value
+        self.updated_at = datetime.now(UTC)
+    
+    def get_metadata(self, key: str, default: Any = None) -> Any:
+        """Get metadata value."""
+        return self.metadata.get(key, default)
+    
+    model_config = ConfigDict(
+        use_enum_values=True
+    )
 
 
 class TransmissionCreateRequest(BaseModel):
-    """Transmission record creation request model."""
+    """Transmission creation request model."""
     
-    email_id: str = Field(..., description="Associated email ID")
     account_id: str = Field(..., description="Associated account ID")
-    method: TransmissionMethod = Field(default=TransmissionMethod.HTTP_POST, description="Transmission method")
+    email_id: Optional[str] = Field(default=None, description="Associated email ID")
+    method: TransmissionMethod = Field(..., description="Transmission method")
     endpoint_url: str = Field(..., description="Target endpoint URL")
-    payload: Dict[str, Any] = Field(default_factory=dict, description="Transmission payload")
-    headers: Dict[str, str] = Field(default_factory=dict, description="HTTP headers")
-    max_retries: int = Field(default=3, description="Maximum number of retries")
+    priority: TransmissionPriority = Field(default=TransmissionPriority.NORMAL, description="Transmission priority")
+    request_headers: Dict[str, str] = Field(default_factory=dict, description="HTTP headers")
+    request_body: Optional[str] = Field(default=None, description="Request body content")
+    request_method: str = Field(default="POST", description="HTTP method")
+    content_type: str = Field(default="application/json", description="Content type")
+    max_retries: int = Field(default=3, description="Maximum retry attempts")
+    scheduled_at: Optional[datetime] = Field(default=None, description="Scheduled transmission time")
+    tags: List[str] = Field(default_factory=list, description="Transmission tags")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     
-    @validator("endpoint_url")
+    @field_validator("endpoint_url")
+    @classmethod
     def validate_endpoint_url(cls, v):
         """Validate endpoint URL format."""
         import re
@@ -234,65 +251,73 @@ class TransmissionCreateRequest(BaseModel):
 
 
 class TransmissionUpdateRequest(BaseModel):
-    """Transmission record update request model."""
+    """Transmission update request model."""
     
     status: Optional[TransmissionStatus] = Field(default=None, description="Transmission status")
-    max_retries: Optional[int] = Field(default=None, description="Maximum number of retries")
-    payload: Optional[Dict[str, Any]] = Field(default=None, description="Updated payload")
-    headers: Optional[Dict[str, str]] = Field(default=None, description="Updated headers")
+    priority: Optional[TransmissionPriority] = Field(default=None, description="Transmission priority")
+    scheduled_at: Optional[datetime] = Field(default=None, description="Scheduled transmission time")
+    max_retries: Optional[int] = Field(default=None, description="Maximum retry attempts")
+    tags: Optional[List[str]] = Field(default=None, description="Transmission tags")
+    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional metadata")
 
 
 class TransmissionResponse(BaseModel):
-    """Transmission record response model."""
+    """Transmission response model."""
     
     id: str = Field(..., description="Transmission record unique identifier")
-    email_id: str = Field(..., description="Associated email ID")
     account_id: str = Field(..., description="Associated account ID")
+    email_id: Optional[str] = Field(default=None, description="Associated email ID")
     method: TransmissionMethod = Field(..., description="Transmission method")
     endpoint_url: str = Field(..., description="Target endpoint URL")
+    priority: TransmissionPriority = Field(..., description="Transmission priority")
     status: TransmissionStatus = Field(..., description="Transmission status")
     retry_count: int = Field(..., description="Number of retry attempts")
-    max_retries: int = Field(..., description="Maximum number of retries")
+    max_retries: int = Field(..., description="Maximum retry attempts")
     response_status_code: Optional[int] = Field(default=None, description="HTTP response status code")
-    error_message: Optional[str] = Field(default=None, description="Error message")
-    created_at: datetime = Field(..., description="Record creation timestamp")
+    response_time_ms: Optional[int] = Field(default=None, description="Response time in milliseconds")
+    duration_ms: Optional[int] = Field(default=None, description="Total transmission duration")
+    created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: Optional[datetime] = Field(default=None, description="Last update timestamp")
-    started_at: Optional[datetime] = Field(default=None, description="Transmission start timestamp")
-    completed_at: Optional[datetime] = Field(default=None, description="Transmission completion timestamp")
-    next_retry_at: Optional[datetime] = Field(default=None, description="Next retry timestamp")
-    duration_ms: Optional[int] = Field(default=None, description="Transmission duration in milliseconds")
-    payload_size_bytes: Optional[int] = Field(default=None, description="Payload size in bytes")
+    scheduled_at: Optional[datetime] = Field(default=None, description="Scheduled transmission time")
+    started_at: Optional[datetime] = Field(default=None, description="Transmission start time")
+    completed_at: Optional[datetime] = Field(default=None, description="Transmission completion time")
+    error_message: Optional[str] = Field(default=None, description="Error message")
+    error_code: Optional[str] = Field(default=None, description="Error code")
+    tags: List[str] = Field(..., description="Transmission tags")
     
-    class Config:
-        """Pydantic configuration."""
-        use_enum_values = True
-        json_encoders = {
-            datetime: lambda v: v.isoformat() if v else None
-        }
+    model_config = ConfigDict(
+        use_enum_values=True
+    )
 
 
 class TransmissionSearchRequest(BaseModel):
-    """Transmission record search request model."""
+    """Transmission search request model."""
     
-    email_id: Optional[str] = Field(default=None, description="Filter by email ID")
     account_id: Optional[str] = Field(default=None, description="Filter by account ID")
+    email_id: Optional[str] = Field(default=None, description="Filter by email ID")
     status: Optional[TransmissionStatus] = Field(default=None, description="Filter by status")
     method: Optional[TransmissionMethod] = Field(default=None, description="Filter by method")
+    priority: Optional[TransmissionPriority] = Field(default=None, description="Filter by priority")
+    tags: Optional[List[str]] = Field(default=None, description="Filter by tags")
     from_date: Optional[datetime] = Field(default=None, description="Filter from date")
     to_date: Optional[datetime] = Field(default=None, description="Filter to date")
-    failed_only: bool = Field(default=False, description="Show only failed transmissions")
-    pending_retry: bool = Field(default=False, description="Show only pending retries")
     limit: int = Field(default=50, description="Maximum number of results")
     offset: int = Field(default=0, description="Result offset for pagination")
 
 
-class TransmissionStatsResponse(BaseModel):
-    """Transmission statistics response model."""
+class TransmissionSummary(BaseModel):
+    """Transmission summary statistics."""
     
-    total_count: int = Field(..., description="Total number of transmissions")
-    success_count: int = Field(..., description="Number of successful transmissions")
-    failed_count: int = Field(..., description="Number of failed transmissions")
-    pending_count: int = Field(..., description="Number of pending transmissions")
+    total_count: int = Field(..., description="Total transmission count")
+    pending_count: int = Field(..., description="Pending transmission count")
+    in_progress_count: int = Field(..., description="In progress transmission count")
+    success_count: int = Field(..., description="Successful transmission count")
+    failed_count: int = Field(..., description="Failed transmission count")
+    cancelled_count: int = Field(..., description="Cancelled transmission count")
     success_rate: float = Field(..., description="Success rate percentage")
-    average_duration_ms: Optional[float] = Field(default=None, description="Average transmission duration")
-    total_retries: int = Field(..., description="Total number of retries")
+    average_response_time_ms: Optional[float] = Field(default=None, description="Average response time")
+    last_transmission_at: Optional[datetime] = Field(default=None, description="Last transmission timestamp")
+    
+    model_config = ConfigDict(
+        use_enum_values=True
+    )

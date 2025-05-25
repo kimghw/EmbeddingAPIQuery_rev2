@@ -2,9 +2,9 @@
 
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
-from datetime import datetime
+from datetime import datetime, UTC
 from uuid import UUID
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from ..domain.email import Email
 from ..domain.transmission_record import TransmissionRecord
@@ -20,12 +20,16 @@ class TransmissionResult(BaseModel):
     processing_time_ms: int = 0
     endpoint: str = ""
     method: str = "POST"
-    timestamp: datetime = datetime.utcnow()
+    timestamp: datetime = datetime.now(UTC)
     
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat() + "Z"
-        }
+    model_config = ConfigDict()
+    
+    def model_dump(self, **kwargs):
+        """Custom serialization to handle datetime."""
+        data = super().model_dump(**kwargs)
+        if 'timestamp' in data and isinstance(data['timestamp'], datetime):
+            data['timestamp'] = data['timestamp'].isoformat() + "Z"
+        return data
 
 
 class ExternalAPIPort(ABC):

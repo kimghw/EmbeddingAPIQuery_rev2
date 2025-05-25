@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 from uuid import UUID
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from ..domain.email import Email
 from ..domain.account import Account
@@ -35,10 +35,15 @@ class EmailData(BaseModel):
     internet_message_id: Optional[str] = None
     web_link: Optional[str] = None
     
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat() if v else None
-        }
+    model_config = ConfigDict()
+    
+    def model_dump(self, **kwargs):
+        """Custom serialization to handle datetime."""
+        data = super().model_dump(**kwargs)
+        for key, value in data.items():
+            if isinstance(value, datetime) and value is not None:
+                data[key] = value.isoformat()
+        return data
 
 
 class TokenInfo(BaseModel):
@@ -52,10 +57,15 @@ class TokenInfo(BaseModel):
     scope: Optional[str] = None
     id_token: Optional[str] = None
     
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat() if v else None
-        }
+    model_config = ConfigDict()
+    
+    def model_dump(self, **kwargs):
+        """Custom serialization to handle datetime."""
+        data = super().model_dump(**kwargs)
+        for key, value in data.items():
+            if isinstance(value, datetime) and value is not None:
+                data[key] = value.isoformat()
+        return data
 
 
 class GraphAPIPort(ABC):

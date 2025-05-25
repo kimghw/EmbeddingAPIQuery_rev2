@@ -445,14 +445,14 @@ class SQLEmailRepository(EmailRepository):
             logger.error(f"Error finding recent emails for account {account_id}: {e}")
             raise RepositoryError(f"Failed to find recent emails: {e}")
     
-    async def find_by_status(self, status: str, skip: int = 0, limit: int = 100) -> List[Email]:
+    async def find_by_status(self, status: str, limit: int = 100, offset: int = 0) -> List[Email]:
         """Find emails by processing status."""
         try:
             stmt = (
                 select(EmailModel)
                 .where(EmailModel.processing_status == status)
                 .order_by(EmailModel.created_at.asc())
-                .offset(skip)
+                .offset(offset)
                 .limit(limit)
             )
             result = await self.session.execute(stmt)
@@ -461,6 +461,17 @@ class SQLEmailRepository(EmailRepository):
         except Exception as e:
             logger.error(f"Error finding emails by status {status}: {e}")
             raise RepositoryError(f"Failed to find emails: {e}")
+    
+    async def count_by_status(self, status: str) -> int:
+        """Count emails by processing status."""
+        try:
+            stmt = select(func.count(EmailModel.id)).where(EmailModel.processing_status == status)
+            result = await self.session.execute(stmt)
+            count = result.scalar()
+            return count or 0
+        except Exception as e:
+            logger.error(f"Error counting emails by status {status}: {e}")
+            raise RepositoryError(f"Failed to count emails: {e}")
     
     async def find_all(self, skip: int = 0, limit: int = 100) -> List[Email]:
         """Find all emails with pagination."""
@@ -734,7 +745,6 @@ class SQLTransmissionRecordRepository(TransmissionRecordRepository):
     async def delete(self, record_id: UUID) -> bool:
         """Delete transmission record by ID."""
         try:
-            recor
             record_model = await self.session.get(TransmissionRecordModel, record_id)
             if record_model:
                 await self.session.delete(record_model)
@@ -744,3 +754,34 @@ class SQLTransmissionRecordRepository(TransmissionRecordRepository):
         except Exception as e:
             logger.error(f"Error deleting transmission record {record_id}: {e}")
             raise RepositoryError(f"Failed to delete transmission record: {e}")
+    
+    async def get_statistics(self) -> Dict[str, Any]:
+        """Get transmission statistics."""
+        try:
+            # Count by status
+            status_counts = {}
+            for status in ["pending", "processing", "success", "failed"]:
+                stmt = select(func.count(TransmissionRecordModel.id)).where(
+                    TransmissionRecordModel.status == status
+                )
+                result = await self.session.execute(stmt)
+                status_counts[status] = result.scalar() or 0
+            
+            # Total count
+            stmt = select(func.count(TransmissionRecordModel.id))
+            result = await self.session.execute(stmt)
+            total_count = result.scalar() or 0
+            
+            # Success rate
+            success_rate = 0.0
+            if total_count > 0:
+                success_rate = (status_counts.get("success", 0) / total_count) * 100
+            
+            return {
+                "total_records": total_count,
+                "status_counts": status_counts,
+                "success_rate": round(success_rate, 2)
+            }
+        except Exception as e:
+            logger.error(f"Error getting transmission statistics: {e}")
+            raise RepositoryError(f"Failed to get transmission statistics: {e}")

@@ -118,6 +118,13 @@ class SubscriptionManagementResponse(BaseModel):
     status: str = "active"
 
 
+class EmailsByStatusResponse(BaseModel):
+    """Response model for emails by status."""
+    emails: List[Email]
+    total_count: int
+    status: str
+
+
 # Use Case Implementation
 class EmailDetectionUseCase:
     """Use case for detecting and analyzing email changes."""
@@ -280,6 +287,37 @@ class EmailDetectionUseCase:
             message_id=email.message_id,
             analysis_results=analysis_results,
             total_processing_time_ms=total_processing_time
+        )
+    
+    async def get_emails_by_status(
+        self, 
+        status: str, 
+        limit: int = 100, 
+        offset: int = 0
+    ) -> EmailsByStatusResponse:
+        """
+        Get emails by processing status.
+        
+        Args:
+            status: Processing status to filter by
+            limit: Maximum number of emails to return
+            offset: Number of emails to skip
+            
+        Returns:
+            Emails by status response
+        """
+        emails = await self.email_repository.find_by_status(
+            status=status,
+            limit=limit,
+            offset=offset
+        )
+        
+        total_count = await self.email_repository.count_by_status(status)
+        
+        return EmailsByStatusResponse(
+            emails=emails,
+            total_count=total_count,
+            status=status
         )
     
     async def create_webhook_subscription(

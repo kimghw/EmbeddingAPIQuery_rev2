@@ -174,6 +174,17 @@ class ConfigurationError(GraphAPIQueryError):
         )
 
 
+class InternalError(GraphAPIQueryError):
+    """내부 시스템 에러"""
+    def __init__(self, message: str, component: Optional[str] = None, **kwargs):
+        super().__init__(
+            message,
+            ErrorCode.INTERNAL_ERROR,
+            details={"component": component} if component else None,
+            **kwargs
+        )
+
+
 # 하위 호환성을 위한 별칭들
 RepositoryError = DatabaseError
 

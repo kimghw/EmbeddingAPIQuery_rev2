@@ -1,8 +1,8 @@
 """User domain entity."""
 
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import List, Optional
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from enum import Enum
 
 
@@ -26,7 +26,8 @@ class User(BaseModel):
     updated_at: Optional[datetime] = Field(default=None, description="Last update timestamp")
     last_login_at: Optional[datetime] = Field(default=None, description="Last login timestamp")
     
-    @validator("email")
+    @field_validator("email")
+    @classmethod
     def validate_email(cls, v):
         """Validate email format."""
         import re
@@ -35,7 +36,8 @@ class User(BaseModel):
             raise ValueError("Invalid email format")
         return v.lower()
     
-    @validator("username")
+    @field_validator("username")
+    @classmethod
     def validate_username(cls, v):
         """Validate username format."""
         if len(v) < 3:
@@ -48,13 +50,13 @@ class User(BaseModel):
         """Add an account to the user."""
         if account_id not in self.account_ids:
             self.account_ids.append(account_id)
-            self.updated_at = datetime.utcnow()
+            self.updated_at = datetime.now(UTC)
     
     def remove_account(self, account_id: str) -> bool:
         """Remove an account from the user."""
         if account_id in self.account_ids:
             self.account_ids.remove(account_id)
-            self.updated_at = datetime.utcnow()
+            self.updated_at = datetime.now(UTC)
             return True
         return False
     
@@ -65,17 +67,17 @@ class User(BaseModel):
     def activate(self) -> None:
         """Activate the user."""
         self.status = UserStatus.ACTIVE
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(UTC)
     
     def deactivate(self) -> None:
         """Deactivate the user."""
         self.status = UserStatus.INACTIVE
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(UTC)
     
     def suspend(self) -> None:
         """Suspend the user."""
         self.status = UserStatus.SUSPENDED
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(UTC)
     
     def is_active(self) -> bool:
         """Check if user is active."""
@@ -83,15 +85,12 @@ class User(BaseModel):
     
     def update_last_login(self) -> None:
         """Update last login timestamp."""
-        self.last_login_at = datetime.utcnow()
-        self.updated_at = datetime.utcnow()
+        self.last_login_at = datetime.now(UTC)
+        self.updated_at = datetime.now(UTC)
     
-    class Config:
-        """Pydantic configuration."""
-        use_enum_values = True
-        json_encoders = {
-            datetime: lambda v: v.isoformat() if v else None
-        }
+    model_config = ConfigDict(
+        use_enum_values=True
+    )
 
 
 class UserCreateRequest(BaseModel):
@@ -101,7 +100,8 @@ class UserCreateRequest(BaseModel):
     email: str = Field(..., description="User email address")
     full_name: Optional[str] = Field(default=None, description="User full name")
     
-    @validator("email")
+    @field_validator("email")
+    @classmethod
     def validate_email(cls, v):
         """Validate email format."""
         import re
@@ -110,7 +110,8 @@ class UserCreateRequest(BaseModel):
             raise ValueError("Invalid email format")
         return v.lower()
     
-    @validator("username")
+    @field_validator("username")
+    @classmethod
     def validate_username(cls, v):
         """Validate username format."""
         if len(v) < 3:
@@ -140,9 +141,6 @@ class UserResponse(BaseModel):
     updated_at: Optional[datetime] = Field(default=None, description="Last update timestamp")
     last_login_at: Optional[datetime] = Field(default=None, description="Last login timestamp")
     
-    class Config:
-        """Pydantic configuration."""
-        use_enum_values = True
-        json_encoders = {
-            datetime: lambda v: v.isoformat() if v else None
-        }
+    model_config = ConfigDict(
+        use_enum_values=True
+    )

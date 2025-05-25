@@ -1,8 +1,8 @@
 """Account domain entity for Office 365 accounts."""
 
-from datetime import datetime
+from datetime import datetime, UTC, timedelta
 from typing import Optional, Dict, Any
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from enum import Enum
 
 
@@ -48,7 +48,8 @@ class Account(BaseModel):
     last_error: Optional[str] = Field(default=None, description="Last error message")
     error_count: int = Field(default=0, description="Consecutive error count")
     
-    @validator("email_address")
+    @field_validator("email_address")
+    @classmethod
     def validate_email(cls, v):
         """Validate email format."""
         import re
@@ -61,7 +62,7 @@ class Account(BaseModel):
         """Check if the access token is still valid."""
         if not self.access_token or not self.token_expires_at:
             return False
-        return datetime.utcnow() < self.token_expires_at
+        return datetime.now(UTC) < self.token_expires_at
     
     def is_token_expired(self) -> bool:
         """Check if the access token is expired."""
@@ -72,8 +73,8 @@ class Account(BaseModel):
         self.access_token = access_token
         if refresh_token:
             self.refresh_token = refresh_token
-        self.token_expires_at = datetime.utcnow().replace(microsecond=0) + datetime.timedelta(seconds=expires_in)
-        self.updated_at = datetime.utcnow()
+        self.token_expires_at = datetime.now(UTC).replace(microsecond=0) + timedelta(seconds=expires_in)
+        self.updated_at = datetime.now(UTC)
         self.clear_error()
     
     def clear_tokens(self) -> None:
@@ -81,48 +82,48 @@ class Account(BaseModel):
         self.access_token = None
         self.refresh_token = None
         self.token_expires_at = None
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(UTC)
     
     def update_sync_status(self, delta_link: str = None) -> None:
         """Update synchronization status."""
-        self.last_sync_at = datetime.utcnow()
+        self.last_sync_at = datetime.now(UTC)
         if delta_link:
             self.delta_link = delta_link
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(UTC)
         self.clear_error()
     
     def enable_sync(self) -> None:
         """Enable synchronization for this account."""
         self.sync_enabled = True
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(UTC)
     
     def disable_sync(self) -> None:
         """Disable synchronization for this account."""
         self.sync_enabled = False
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(UTC)
     
     def activate(self) -> None:
         """Activate the account."""
         self.status = AccountStatus.ACTIVE
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(UTC)
         self.clear_error()
     
     def deactivate(self) -> None:
         """Deactivate the account."""
         self.status = AccountStatus.INACTIVE
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(UTC)
     
     def mark_expired(self) -> None:
         """Mark the account as expired."""
         self.status = AccountStatus.EXPIRED
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(UTC)
     
     def mark_error(self, error_message: str) -> None:
         """Mark the account as having an error."""
         self.status = AccountStatus.ERROR
         self.last_error = error_message
         self.error_count += 1
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(UTC)
     
     def clear_error(self) -> None:
         """Clear error status."""
@@ -130,7 +131,7 @@ class Account(BaseModel):
             self.status = AccountStatus.ACTIVE
         self.last_error = None
         self.error_count = 0
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(UTC)
     
     def is_active(self) -> bool:
         """Check if account is active."""
@@ -148,12 +149,9 @@ class Account(BaseModel):
         """Check if account should be retried after errors."""
         return self.error_count < max_errors
     
-    class Config:
-        """Pydantic configuration."""
-        use_enum_values = True
-        json_encoders = {
-            datetime: lambda v: v.isoformat() if v else None
-        }
+    model_config = ConfigDict(
+        use_enum_values=True
+    )
 
 
 class AccountCreateRequest(BaseModel):
@@ -166,7 +164,8 @@ class AccountCreateRequest(BaseModel):
     tenant_id: Optional[str] = Field(default=None, description="Azure tenant ID")
     client_id: Optional[str] = Field(default=None, description="Azure client ID")
     
-    @validator("email_address")
+    @field_validator("email_address")
+    @classmethod
     def validate_email(cls, v):
         """Validate email format."""
         import re
@@ -201,12 +200,9 @@ class AccountResponse(BaseModel):
     last_error: Optional[str] = Field(default=None, description="Last error message")
     error_count: int = Field(..., description="Consecutive error count")
     
-    class Config:
-        """Pydantic configuration."""
-        use_enum_values = True
-        json_encoders = {
-            datetime: lambda v: v.isoformat() if v else None
-        }
+    model_config = ConfigDict(
+        use_enum_values=True
+    )
 
 
 class TokenUpdateRequest(BaseModel):

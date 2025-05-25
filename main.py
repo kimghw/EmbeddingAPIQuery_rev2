@@ -2,7 +2,7 @@
 
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, UTC
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -86,7 +86,7 @@ def create_app() -> FastAPI:
             "environment": config.ENVIRONMENT,
             "docs_url": "/docs" if config.ENVIRONMENT == "development" else None,
             "api_prefix": "/api/v1",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(UTC).isoformat()
         }
     
     @app.get("/health")
@@ -94,7 +94,7 @@ def create_app() -> FastAPI:
         """Basic health check endpoint."""
         return {
             "status": "healthy",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "version": "1.0.0"
         }
     

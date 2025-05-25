@@ -1,8 +1,8 @@
 """Email domain entity."""
 
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from enum import Enum
 
 
@@ -62,7 +62,8 @@ class EmailRecipient(BaseModel):
     name: Optional[str] = Field(default=None, description="Recipient display name")
     email: str = Field(..., description="Recipient email address")
     
-    @validator("email")
+    @field_validator("email")
+    @classmethod
     def validate_email(cls, v):
         """Validate email format."""
         import re
@@ -160,8 +161,8 @@ class Email(BaseModel):
     def mark_processed(self) -> None:
         """Mark email as processed."""
         self.status = EmailStatus.PROCESSED
-        self.processed_at = datetime.utcnow()
-        self.updated_at = datetime.utcnow()
+        self.processed_at = datetime.now(UTC)
+        self.updated_at = datetime.now(UTC)
         self.processing_error = None
     
     def mark_failed(self, error_message: str) -> None:
@@ -169,20 +170,20 @@ class Email(BaseModel):
         self.status = EmailStatus.FAILED
         self.processing_error = error_message
         self.retry_count += 1
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(UTC)
     
     def mark_ignored(self, reason: str = None) -> None:
         """Mark email as ignored."""
         self.status = EmailStatus.IGNORED
         if reason:
             self.processing_error = f"Ignored: {reason}"
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(UTC)
     
     def reset_for_retry(self) -> None:
         """Reset email status for retry."""
         self.status = EmailStatus.PENDING
         self.processing_error = None
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(UTC)
     
     def should_retry(self, max_retries: int = 3) -> bool:
         """Check if email should be retried."""
@@ -200,12 +201,9 @@ class Email(BaseModel):
         """Get total size of all attachments in bytes."""
         return sum(attachment.size for attachment in self.attachments)
     
-    class Config:
-        """Pydantic configuration."""
-        use_enum_values = True
-        json_encoders = {
-            datetime: lambda v: v.isoformat() if v else None
-        }
+    model_config = ConfigDict(
+        use_enum_values=True
+    )
 
 
 class EmailCreateRequest(BaseModel):
@@ -254,12 +252,9 @@ class EmailResponse(BaseModel):
     created_at: datetime = Field(..., description="Record creation timestamp")
     updated_at: Optional[datetime] = Field(default=None, description="Record update timestamp")
     
-    class Config:
-        """Pydantic configuration."""
-        use_enum_values = True
-        json_encoders = {
-            datetime: lambda v: v.isoformat() if v else None
-        }
+    model_config = ConfigDict(
+        use_enum_values=True
+    )
 
 
 class EmailSearchRequest(BaseModel):

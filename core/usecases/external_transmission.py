@@ -110,6 +110,14 @@ class TransmissionStatusResponse(BaseModel):
     status_summary: Dict[str, int]
 
 
+class TransmissionSummaryResponse(BaseModel):
+    """Response model for transmission summary."""
+    success: bool
+    summary: Dict[str, int]
+    total_transmissions: int
+    generated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class CleanupRequest(BaseModel):
     """Request model for cleanup old transmission records."""
     days_old: int = Field(30, description="Delete records older than this many days")
@@ -428,6 +436,47 @@ class ExternalTransmissionUseCase:
             total_count=len(records),
             status_summary=status_summary
         )
+    
+    async def get_transmission_summary(self) -> TransmissionSummaryResponse:
+        """
+        Get transmission summary with status counts.
+        
+        Returns:
+            Transmission summary response
+        """
+        try:
+            # Get all transmission records
+            all_records = await self.transmission_repository.find_all()
+            
+            # Count by status
+            status_counts = {
+                "pending": 0,
+                "sent": 0,
+                "failed": 0
+            }
+            
+            for record in all_records:
+                if record.status == TransmissionStatus.PENDING.value:
+                    status_counts["pending"] += 1
+                elif record.status == TransmissionStatus.SUCCESS.value:
+                    status_counts["sent"] += 1
+                elif record.status == TransmissionStatus.FAILED.value:
+                    status_counts["failed"] += 1
+            
+            total_transmissions = len(all_records)
+            
+            return TransmissionSummaryResponse(
+                success=True,
+                summary=status_counts,
+                total_transmissions=total_transmissions
+            )
+            
+        except Exception as e:
+            return TransmissionSummaryResponse(
+                success=False,
+                summary={"pending": 0, "sent": 0, "failed": 0},
+                total_transmissions=0
+            )
     
     async def process_pending_transmissions(
         self, 

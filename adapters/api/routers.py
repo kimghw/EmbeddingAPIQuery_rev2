@@ -1,7 +1,7 @@
 """FastAPI routers implementation."""
 
 import logging
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import List, Optional
 from uuid import UUID
 
@@ -529,7 +529,7 @@ def create_health_router() -> APIRouter:
             return HealthCheckResponse(
                 status=status,
                 services=services,
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(UTC)
             )
             
         except Exception as e:
@@ -537,7 +537,7 @@ def create_health_router() -> APIRouter:
             return HealthCheckResponse(
                 status="error",
                 services={},
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(UTC)
             )
     
     @router.get("/database", response_model=DatabaseHealthResponse)
@@ -551,7 +551,7 @@ def create_health_router() -> APIRouter:
             return DatabaseHealthResponse(
                 status="healthy" if is_healthy else "unhealthy",
                 connection=is_healthy,
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(UTC)
             )
             
         except Exception as e:
@@ -559,7 +559,7 @@ def create_health_router() -> APIRouter:
             return DatabaseHealthResponse(
                 status="error",
                 connection=False,
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(UTC)
             )
     
     return router
@@ -624,7 +624,7 @@ def create_config_router() -> APIRouter:
             }
             
             return ConnectionTestResponse(
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(UTC),
                 tests=tests,
                 overall_result=overall_result
             )

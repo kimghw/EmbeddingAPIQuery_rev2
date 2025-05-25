@@ -186,7 +186,7 @@ class EmailRepository(BaseRepository):
         pass
     
     @abstractmethod
-    async def find_by_status(self, status: str, skip: int = 0, limit: int = 100) -> List[Email]:
+    async def find_by_status(self, status: str, limit: int = 100, offset: int = 0) -> List[Email]:
         """Find emails by processing status."""
         pass
     
@@ -213,6 +213,11 @@ class EmailRepository(BaseRepository):
     @abstractmethod
     async def update_processing_status(self, email_id: UUID, status: str) -> bool:
         """Update email processing status."""
+        pass
+    
+    @abstractmethod
+    async def count_by_status(self, status: str) -> int:
+        """Count emails by processing status."""
         pass
 
 
