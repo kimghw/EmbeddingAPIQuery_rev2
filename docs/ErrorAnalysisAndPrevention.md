@@ -1,317 +1,270 @@
-# 에러 분석 및 사후 방지 지침
+# 에러 분석 및 재발 방지 지침
 
-## 📋 개요
-본 문서는 Microsoft Graph API 이메일 감지 시스템 개발 과정에서 발생한 에러들을 분석하고, 향후 유사한 문제를 방지하기 위한 지침을 제공합니다.
+## 프로젝트 개발 과정에서 발생한 주요 에러 분석
 
----
+### 1. 도메인 모델 타입 불일치 에러
 
-## 🚨 발생한 주요 에러 분석
-
-### 1. SQLAlchemy 경고: "fully NULL primary key identity cannot load any object"
-
-**에러 내용:**
+#### 발생한 에러
 ```
-SAWarning: fully NULL primary key identity cannot load any object. This condition may raise an error in a future release.
+ValidationError: 1 validation error for User
+id
+  Input should be a valid string [type=string_type, input_value=UUID('39dd6508-5a53-4e9d-8a98-cd6a4265a8d6'), input_type=UUID]
 ```
 
-**원인 분석:**
-- SQLAlchemy ORM에서 Primary Key가 None인 객체를 로드하려고 할 때 발생
-- 새로운 엔티티 생성 시 ID가 아직 할당되지 않은 상태에서 관계 조회 시도
+#### 원인 분석
+- **근본 원인**: Pydantic 도메인 모델에서 `id` 필드를 `str` 타입으로 정의했으나, 테스트 코드에서 `uuid.uuid4()` 객체를 직접 전달
+- **설계 불일치**: 도메인 모델의 타입 정의와 실제 사용 코드 간의 불일치
+- **타입 검증 부족**: 개발 단계에서 타입 검증이 충분히 이루어지지 않음
 
-**해결 방법:**
-- 엔티티 생성 후 즉시 flush() 또는 commit() 호출하여 ID 할당
-- 관계 조회 전 객체가 완전히 저장되었는지 확인
-
-**예방 지침:**
+#### 해결 방법
 ```python
 # 잘못된 방법
-user = User(username="test")
-session.add(user)
-# user.id는 아직 None 상태
-accounts = user.accounts  # 경고 발생
+test_user = User(
+    id=uuid.uuid4(),  # UUID 객체 직접 사용
+    username="test_user",
+    email="test@example.com"
+)
 
 # 올바른 방법
-user = User(username="test")
-session.add(user)
-session.flush()  # ID 할당
-accounts = user.accounts  # 안전
-```
-
-### 2. 포트 충돌 에러: "Address already in use"
-
-**에러 내용:**
-```
-ERROR: [Errno 98] Address already in use
-```
-
-**원인 분석:**
-- 이전에 실행된 서버 프로세스가 완전히 종료되지 않음
-- 동일한 포트를 사용하는 다른 프로세스가 실행 중
-
-**해결 방법:**
-```bash
-# 포트 사용 프로세스 확인
-netstat -tlnp | grep :5000
-lsof -ti:5000
-
-# 프로세스 강제 종료
-sudo kill -9 $(lsof -ti:5000)
-```
-
-**예방 지침:**
-- 서버 종료 시 Ctrl+C로 정상 종료
-- 개발 환경에서는 서로 다른 포트 사용
-- 스크립트에 포트 체크 로직 추가
-
-### 3. favicon.ico 404 에러
-
-**에러 내용:**
-```
-INFO: 127.0.0.1:51730 - "GET /favicon.ico HTTP/1.1" 404 Not Found
-```
-
-**원인 분석:**
-- 브라우저가 자동으로 요청하는 favicon 파일이 없음
-- FastAPI에서 정적 파일 서빙 설정 누락
-
-**해결 방법:**
-```python
-# main.py에 추가
-from fastapi.staticfiles import StaticFiles
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-# 또는 favicon 라우트 추가
-@app.get("/favicon.ico")
-async def favicon():
-    return FileResponse("static/favicon.ico")
-```
-
-**예방 지침:**
-- 프로젝트 초기 설정 시 정적 파일 디렉토리 구성
-- favicon.ico 파일 기본 제공
-- 404 에러가 기능에 영향 없음을 문서화
-
----
-
-## 🛡️ 사후 방지 지침
-
-### 1. 개발 환경 설정 체크리스트
-
-#### 1.1 프로젝트 초기화
-- [ ] 가상환경 생성 및 활성화 확인
-- [ ] requirements.txt 의존성 설치 완료
-- [ ] .env 파일 설정 및 민감정보 확인
-- [ ] .gitignore 설정 (가상환경, .env, __pycache__ 등)
-
-#### 1.2 데이터베이스 설정
-- [ ] SQLAlchemy 모델 정의 완료
-- [ ] 관계 설정 시 lazy loading 고려
-- [ ] Primary Key 자동 생성 설정 확인
-- [ ] 테이블 생성 스크립트 테스트
-
-#### 1.3 서버 실행 전 체크
-- [ ] 포트 사용 여부 확인 (`netstat -tlnp | grep :PORT`)
-- [ ] 이전 프로세스 정리
-- [ ] 로그 레벨 설정 확인
-
-### 2. 코딩 표준 및 베스트 프랙티스
-
-#### 2.1 SQLAlchemy 사용 시
-```python
-# 1. 엔티티 생성 후 즉시 flush
-def create_entity(session, data):
-    entity = Entity(**data)
-    session.add(entity)
-    session.flush()  # ID 할당
-    return entity
-
-# 2. 관계 조회 전 존재 확인
-def get_related_entities(entity):
-    if entity.id is None:
-        raise ValueError("Entity must be saved before accessing relations")
-    return entity.related_entities
-
-# 3. 트랜잭션 관리
-def safe_operation(session):
-    try:
-        # 작업 수행
-        session.commit()
-    except Exception as e:
-        session.rollback()
-        raise e
-```
-
-#### 2.2 서버 관리
-```python
-# 1. 포트 체크 함수
-def check_port_available(port):
-    import socket
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex(('localhost', port)) != 0
-
-# 2. 서버 시작 전 체크
-if not check_port_available(5000):
-    print("Port 5000 is already in use")
-    exit(1)
-```
-
-#### 2.3 에러 핸들링
-```python
-# 1. 구체적인 예외 처리
-try:
-    result = risky_operation()
-except SpecificException as e:
-    logger.error(f"Specific error occurred: {e}")
-    # 구체적인 복구 로직
-except Exception as e:
-    logger.error(f"Unexpected error: {e}")
-    # 일반적인 에러 처리
-
-# 2. 로깅 표준화
-import logging
-logger = logging.getLogger(__name__)
-
-def log_operation(operation_name):
-    def decorator(func):
-        def wrapper(*args, **kwargs):
-            logger.info(f"Starting {operation_name}")
-            try:
-                result = func(*args, **kwargs)
-                logger.info(f"Completed {operation_name}")
-                return result
-            except Exception as e:
-                logger.error(f"Failed {operation_name}: {e}")
-                raise
-        return wrapper
-    return decorator
-```
-
-### 3. 테스트 및 검증 절차
-
-#### 3.1 단위 테스트 필수 항목
-- [ ] 모든 유즈케이스 테스트
-- [ ] 데이터베이스 CRUD 작업 테스트
-- [ ] 에러 케이스 테스트
-- [ ] 경계값 테스트
-
-#### 3.2 통합 테스트 체크리스트
-- [ ] API 엔드포인트 전체 테스트
-- [ ] 데이터베이스 연동 테스트
-- [ ] 외부 API 모킹 테스트
-- [ ] 인증/인가 플로우 테스트
-
-#### 3.3 배포 전 검증
-- [ ] 모든 테스트 통과
-- [ ] 로그 레벨 프로덕션 설정
-- [ ] 환경변수 검증
-- [ ] 성능 테스트 수행
-
-### 4. 모니터링 및 알림 설정
-
-#### 4.1 로그 모니터링
-```python
-# 구조화된 로깅
-import structlog
-
-logger = structlog.get_logger()
-
-def log_with_context(operation, **context):
-    logger.info(
-        "Operation completed",
-        operation=operation,
-        **context
-    )
-```
-
-#### 4.2 에러 추적
-```python
-# Sentry 연동 (선택사항)
-import sentry_sdk
-
-sentry_sdk.init(
-    dsn="YOUR_SENTRY_DSN",
-    traces_sample_rate=1.0,
+test_user = User(
+    id=str(uuid.uuid4()),  # 문자열로 변환
+    username="test_user", 
+    email="test@example.com"
 )
 ```
 
-### 5. 문서화 요구사항
+### 2. 데이터베이스 UNIQUE 제약 조건 위반
 
-#### 5.1 필수 문서
-- [ ] API 문서 (Swagger/OpenAPI)
-- [ ] 설치 및 실행 가이드
-- [ ] 환경 설정 가이드
-- [ ] 트러블슈팅 가이드
-- [ ] 에러 코드 정의서
-
-#### 5.2 코드 문서화
-```python
-# 1. 함수 문서화
-def process_email_changes(account_id: str) -> List[EmailChange]:
-    """
-    계정의 이메일 변경사항을 감지하고 처리합니다.
-    
-    Args:
-        account_id: 처리할 계정 ID
-        
-    Returns:
-        감지된 이메일 변경사항 목록
-        
-    Raises:
-        AccountNotFoundError: 계정을 찾을 수 없는 경우
-        GraphAPIError: Graph API 호출 실패 시
-    """
-    pass
-
-# 2. 클래스 문서화
-class EmailDetectionUseCase:
-    """
-    이메일 변경사항 감지를 담당하는 유즈케이스.
-    
-    Microsoft Graph API의 DeltaLink를 사용하여
-    효율적으로 변경사항을 감지합니다.
-    """
-    pass
+#### 발생한 에러
+```
+IntegrityError: (sqlite3.IntegrityError) UNIQUE constraint failed: users.email
 ```
 
----
+#### 원인 분석
+- **근본 원인**: 이전 테스트 실행에서 생성된 데이터가 데이터베이스에 남아있어 동일한 이메일로 사용자 생성 시도
+- **테스트 격리 부족**: 테스트 간 데이터 격리가 제대로 이루어지지 않음
+- **테스트 데이터 관리 미흡**: 고정된 테스트 데이터 사용으로 인한 충돌
 
-## 🔄 지속적 개선 프로세스
+#### 해결 방법
+```python
+# 고유한 테스트 데이터 생성
+unique_id = str(uuid.uuid4())[:8]
+test_user = User(
+    id=str(uuid.uuid4()),
+    username=f"test_user_{unique_id}",
+    email=f"test_{unique_id}@example.com",
+    created_at=datetime.now()
+)
+```
 
-### 1. 에러 발생 시 대응 절차
-1. **즉시 대응**: 에러 로그 수집 및 분석
-2. **임시 조치**: 서비스 복구를 위한 임시 해결책 적용
-3. **근본 원인 분석**: 에러 발생 원인 심층 분석
-4. **영구 해결책**: 근본 원인 제거를 위한 코드 수정
-5. **문서 업데이트**: 본 문서에 새로운 에러 케이스 추가
-6. **테스트 추가**: 동일한 에러 방지를 위한 테스트 케이스 작성
+### 3. Repository 메서드명 불일치
 
-### 2. 정기 점검 항목
-- **주간**: 로그 분석 및 성능 모니터링
-- **월간**: 의존성 업데이트 및 보안 점검
-- **분기**: 아키텍처 리뷰 및 리팩토링 계획
+#### 발생한 에러
+```
+AttributeError: 'SQLUserRepository' object has no attribute 'create'
+```
 
-### 3. 팀 공유 및 학습
-- 에러 케이스 공유 세션
-- 베스트 프랙티스 문서 업데이트
-- 코드 리뷰 체크리스트 개선
+#### 원인 분석
+- **근본 원인**: Repository 인터페이스와 구현체 간의 메서드명 불일치
+- **인터페이스 설계 불일치**: 포트(인터페이스)와 어댑터(구현체) 간의 계약 불일치
+- **문서화 부족**: 실제 구현된 메서드명에 대한 문서화 부족
 
----
+#### 해결 방법
+```python
+# 잘못된 방법
+created_user = await user_repo.create(test_user)
 
-## 📚 참고 자료
+# 올바른 방법 (실제 구현된 메서드 사용)
+created_user = await user_repo.save(test_user)
+```
 
-### 공식 문서
-- [SQLAlchemy ORM Tutorial](https://docs.sqlalchemy.org/en/14/orm/tutorial.html)
-- [FastAPI Documentation](https://fastapi.tiangolo.com/)
-- [Microsoft Graph API](https://docs.microsoft.com/en-us/graph/)
+### 4. Deprecated 함수 사용 경고
 
-### 에러 해결 가이드
-- [SQLAlchemy Common Issues](https://docs.sqlalchemy.org/en/14/errors.html)
-- [FastAPI Troubleshooting](https://fastapi.tiangolo.com/tutorial/debugging/)
-- [Python Logging Best Practices](https://docs.python.org/3/howto/logging.html)
+#### 발생한 경고
+```
+DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version.
+```
 
----
+#### 원인 분석
+- **근본 원인**: Python 3.12에서 `datetime.utcnow()` 함수가 deprecated됨
+- **라이브러리 버전 변경**: Python 버전 업그레이드에 따른 API 변경사항 미반영
+- **최신 표준 미적용**: timezone-aware datetime 사용 권장사항 미적용
 
-**최종 업데이트**: 2025-05-25  
-**작성자**: GraphAPI Query System Development Team  
-**버전**: 1.0
+#### 해결 방법
+```python
+# Deprecated 방법
+created_at=datetime.utcnow()
+
+# 권장 방법
+created_at=datetime.now()
+# 또는 timezone-aware 방법
+created_at=datetime.now(datetime.UTC)
+```
+
+## 재발 방지 지침
+
+### 1. 개발 단계별 검증 체크리스트
+
+#### 설계 단계
+- [ ] 도메인 모델의 타입 정의 명확화
+- [ ] 포트/어댑터 인터페이스 계약 명시
+- [ ] 데이터베이스 스키마와 도메인 모델 일치성 확인
+
+#### 구현 단계
+- [ ] Pydantic 모델 타입 검증 테스트 작성
+- [ ] Repository 인터페이스와 구현체 메서드명 일치 확인
+- [ ] 최신 Python 버전 호환성 검토
+
+#### 테스트 단계
+- [ ] 테스트 데이터 격리 전략 수립
+- [ ] 고유한 테스트 데이터 생성 로직 구현
+- [ ] 데이터베이스 초기화/정리 자동화
+
+### 2. 코드 품질 관리 도구 도입
+
+#### 정적 분석 도구
+```bash
+# 타입 검사
+pip install mypy
+mypy core/ adapters/
+
+# 코드 품질 검사
+pip install pylint
+pylint core/ adapters/
+
+# 포맷팅
+pip install black
+black core/ adapters/
+```
+
+#### pre-commit 훅 설정
+```yaml
+# .pre-commit-config.yaml
+repos:
+  - repo: https://github.com/psf/black
+    rev: 23.1.0
+    hooks:
+      - id: black
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.0.1
+    hooks:
+      - id: mypy
+```
+
+### 3. 테스트 전략 개선
+
+#### 테스트 격리 패턴
+```python
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+@pytest.fixture
+def clean_database():
+    """각 테스트마다 깨끗한 데이터베이스 제공"""
+    engine = create_engine("sqlite:///:memory:")
+    # 테이블 생성
+    Base.metadata.create_all(engine)
+    
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    
+    yield session
+    
+    session.close()
+```
+
+#### 테스트 데이터 팩토리
+```python
+class TestDataFactory:
+    @staticmethod
+    def create_unique_user():
+        unique_id = str(uuid.uuid4())[:8]
+        return User(
+            id=str(uuid.uuid4()),
+            username=f"test_user_{unique_id}",
+            email=f"test_{unique_id}@example.com",
+            created_at=datetime.now()
+        )
+```
+
+### 4. 문서화 및 가이드라인
+
+#### API 문서화
+- 모든 Repository 메서드의 시그니처와 동작 명세
+- 도메인 모델의 필드 타입과 제약사항 문서화
+- 에러 처리 가이드라인 작성
+
+#### 개발 가이드라인
+```markdown
+## 도메인 모델 작성 규칙
+1. 모든 ID 필드는 str 타입으로 정의
+2. datetime 필드는 timezone-aware 사용 권장
+3. Optional 필드는 명시적으로 Optional[] 타입 사용
+
+## 테스트 작성 규칙
+1. 각 테스트는 독립적으로 실행 가능해야 함
+2. 테스트 데이터는 고유성을 보장해야 함
+3. 테스트 후 리소스 정리 필수
+```
+
+### 5. CI/CD 파이프라인 개선
+
+#### GitHub Actions 워크플로우
+```yaml
+name: CI
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest mypy black
+      
+      - name: Run type checking
+        run: mypy core/ adapters/
+      
+      - name: Run code formatting check
+        run: black --check core/ adapters/
+      
+      - name: Run tests
+        run: pytest tests/ -v
+```
+
+### 6. 모니터링 및 알림
+
+#### 에러 추적
+- Sentry 등 에러 모니터링 도구 연동
+- 구조화된 로깅으로 에러 컨텍스트 수집
+- 에러 발생 시 자동 알림 설정
+
+#### 성능 모니터링
+- 데이터베이스 쿼리 성능 모니터링
+- API 응답 시간 추적
+- 메모리 사용량 모니터링
+
+## 결론
+
+이번 프로젝트에서 발생한 에러들은 대부분 다음과 같은 공통 원인을 가지고 있었습니다:
+
+1. **타입 안정성 부족**: 정적 타입 검사 도구 미사용
+2. **테스트 격리 부족**: 테스트 간 데이터 공유로 인한 충돌
+3. **인터페이스 불일치**: 설계와 구현 간의 계약 불일치
+4. **최신 표준 미적용**: 라이브러리 버전 변경사항 미반영
+
+이러한 문제들을 해결하기 위해 위에서 제시한 지침들을 따르면, 향후 유사한 에러의 재발을 크게 줄일 수 있을 것입니다.
+
+**핵심 원칙**: 
+- 타입 안정성 확보
+- 테스트 격리 보장  
+- 인터페이스 계약 준수
+- 지속적인 코드 품질 관리

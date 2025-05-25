@@ -27,6 +27,12 @@ from adapters.external_api import ExternalAPIAdapter
 from core.usecases.account_management import AccountManagementUseCase
 from core.usecases.email_detection import EmailDetectionUseCase
 from core.usecases.external_transmission import ExternalTransmissionUseCase
+from core.usecases.multi_account_manager import (
+    MultiAccountManagerUseCase,
+    MultiAccountSyncRequest,
+    TokenRefreshRequest,
+    AccountHealthCheckRequest
+)
 
 
 # Initialize console for rich output
@@ -45,6 +51,7 @@ email_app = typer.Typer(name="email", help="Email detection and management comma
 transmission_app = typer.Typer(name="transmission", help="External transmission commands")
 db_app = typer.Typer(name="db", help="Database management commands")
 config_app = typer.Typer(name="config", help="Configuration management commands")
+multi_app = typer.Typer(name="multi", help="Multi-account management commands")
 
 # Add sub-commands to main app
 app.add_typer(account_app, name="account")
@@ -52,6 +59,7 @@ app.add_typer(email_app, name="email")
 app.add_typer(transmission_app, name="transmission")
 app.add_typer(db_app, name="db")
 app.add_typer(config_app, name="config")
+app.add_typer(multi_app, name="multi")
 
 
 # Global dependencies
@@ -99,12 +107,192 @@ def get_dependencies():
         'config': config,
         'db_adapter': db_adapter,
         'session': session,
+        'user_repo': user_repo,
+        'account_repo': account_repo,
+        'email_repo': email_repo,
+        'transmission_repo': transmission_repo,
         'account_usecase': account_usecase,
         'email_usecase': email_usecase,
         'transmission_usecase': transmission_usecase,
         'graph_api': graph_api,
         'external_api': external_api
     }
+
+
+def create_multi_account_manager(deps):
+    """Create MultiAccountManagerUseCase with dependencies."""
+    return MultiAccountManagerUseCase(
+        account_management=deps['account_usecase'],
+        email_detection=deps['email_usecase'],
+        external_transmission=deps['transmission_usecase'],
+        account_repository=deps['account_repo'],
+        email_repository=deps['email_repo'],
+        user_repository=deps['user_repo'],
+        graph_api=deps['graph_api'],
+        config=deps['config']
+    )
+
+
+# Multi-account management commands
+@multi_app.command("sync-all")
+def sync_all():
+    """Sync all active accounts."""
+    try:
+        deps = get_dependencies()
+        multi_account_manager = create_multi_account_manager(deps)
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task("Syncing all accounts...", total=None)
+            
+            result = asyncio.run(multi_account_manager.sync_all_accounts(
+                MultiAccountSyncRequest(sync_active_only=True)
+            ))
+        
+        console.print(f"[green]✅ Synced {result.successful_syncs}/{result.total_accounts} accounts[/green]")
+        console.print(f"📧 Detected {result.total_emails_detected} emails")
+        console.print(f"📤 Transmitted {result.total_emails_transmitted} emails")
+        console.print(f"⏱️ Total duration: {result.total_duration_ms}ms")
+        
+        if result.account_results:
+            # Show detailed results table
+            table = Table(title="Account Sync Results")
+            table.add_column("Email", style="cyan")
+            table.add_column("Status", style="green")
+            table.add_column("Emails", style="yellow")
+            table.add_column("Transmitted", style="blue")
+            table.add_column("Duration", style="magenta")
+            
+            for account_result in result.account_results:
+                status_color = "green" if account_result.status == "success" else "red"
+                table.add_row(
+                    account_result.email,
+                    f"[{status_color}]{account_result.status}[/{status_color}]",
+                    str(account_result.emails_detected),
+                    str(account_result.emails_transmitted),
+                    f"{account_result.sync_duration_ms}ms"
+                )
+            
+            console.print(table)
+        
+    except Exception as e:
+        console.print(f"[red]Error syncing accounts: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@multi_app.command("refresh-tokens")
+def refresh_tokens(
+    hours_before_expiry: int = typer.Option(24, "--hours", "-h", help="Refresh tokens expiring within this many hours")
+):
+    """Refresh expiring tokens."""
+    try:
+        deps = get_dependencies()
+        multi_account_manager = create_multi_account_manager(deps)
+        
+        with console.status("[bold green]Refreshing tokens..."):
+            result = asyncio.run(multi_account_manager.refresh_expiring_tokens(
+                TokenRefreshRequest(hours_before_expiry=hours_before_expiry)
+            ))
+        
+        console.print(f"[green]🔐 Refreshed {result.tokens_refreshed} tokens[/green]")
+        console.print(f"❌ Failed {result.tokens_failed} tokens")
+        console.print(f"📊 Checked {result.accounts_checked} accounts")
+        
+        if result.refresh_results:
+            # Show refresh results table
+            table = Table(title="Token Refresh Results")
+            table.add_column("Email", style="cyan")
+            table.add_column("Status", style="green")
+            table.add_column("Error", style="red")
+            
+            for refresh_result in result.refresh_results:
+                status_color = "green" if refresh_result["status"] == "refreshed" else "red"
+                table.add_row(
+                    refresh_result["email"],
+                    f"[{status_color}]{refresh_result['status']}[/{status_color}]",
+                    refresh_result.get("error", "")
+                )
+            
+            console.print(table)
+        
+    except Exception as e:
+        console.print(f"[red]Error refreshing tokens: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@multi_app.command("health-check")
+def health_check():
+    """Check health of all accounts."""
+    try:
+        deps = get_dependencies()
+        multi_account_manager = create_multi_account_manager(deps)
+        
+        with console.status("[bold green]Checking account health..."):
+            result = asyncio.run(multi_account_manager.check_accounts_health(
+                AccountHealthCheckRequest()
+            ))
+        
+        console.print(f"[green]✅ Healthy accounts: {result.healthy_accounts}[/green]")
+        console.print(f"[red]❌ Unhealthy accounts: {result.unhealthy_accounts}[/red]")
+        console.print(f"📊 Total accounts: {result.total_accounts}")
+        
+        # Create health status table
+        table = Table(title="Account Health Status")
+        table.add_column("Email", style="cyan")
+        table.add_column("Status", style="green")
+        table.add_column("Token Valid", style="yellow")
+        table.add_column("Last Sync", style="blue")
+        table.add_column("Issues", style="red")
+        
+        for status in result.account_statuses:
+            health_status = "✅ Healthy" if status.is_healthy else "❌ Unhealthy"
+            token_status = "✓" if status.token_valid else "✗"
+            last_sync = status.last_sync_at.strftime("%Y-%m-%d %H:%M") if status.last_sync_at else "Never"
+            issues = ", ".join(status.issues) if status.issues else "None"
+            
+            table.add_row(
+                status.email,
+                health_status,
+                token_status,
+                last_sync,
+                issues
+            )
+        
+        console.print(table)
+        
+    except Exception as e:
+        console.print(f"[red]Error checking account health: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@multi_app.command("periodic-sync")
+def periodic_sync(
+    interval_minutes: int = typer.Option(5, "--interval", "-i", help="Sync interval in minutes"),
+    max_duration_minutes: int = typer.Option(60, "--max-duration", "-d", help="Maximum duration in minutes")
+):
+    """Run periodic synchronization."""
+    try:
+        deps = get_dependencies()
+        multi_account_manager = create_multi_account_manager(deps)
+        
+        console.print(f"[blue]🔄 Starting periodic sync (interval: {interval_minutes}min, max duration: {max_duration_minutes}min)[/blue]")
+        
+        result = asyncio.run(multi_account_manager.schedule_periodic_sync(
+            interval_minutes=interval_minutes,
+            max_duration_minutes=max_duration_minutes
+        ))
+        
+        console.print(f"[green]✅ Periodic sync completed![/green]")
+        console.print(f"🔄 Sync cycles: {result['sync_count']}")
+        console.print(f"📧 Total emails detected: {result['total_emails_detected']}")
+        console.print(f"⏱️ Duration: {result['duration_minutes']} minutes")
+        
+    except Exception as e:
+        console.print(f"[red]Error running periodic sync: {e}[/red]")
+        raise typer.Exit(1)
 
 
 # Account management commands
